@@ -1,0 +1,30 @@
+CONFIG_IDF_TARGET="esp32s3"
+
+# Flash size (most ESP32-S3 modules are 4MB+)
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
+# Disable WiFi/BT — not needed, saves flash
+CONFIG_ESP_WIFI_ENABLED=n
+CONFIG_BT_ENABLED=n
+
+# Enable required peripherals — use true driver names
+CONFIG_RMT_ISR_IRAM_SAFE=y
+CONFIG_PCNT_ISR_IRAM_SAFE=y
+
+# Partition table
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# FreeRTOS — leave second core enabled
+CONFIG_FREERTOS_UNICORE=n
+
+# Log level
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_INFO=y
+
+# Main task stack
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+
+# Compiler options
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
