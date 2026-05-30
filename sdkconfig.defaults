@@ -16,7 +16,8 @@ CONFIG_PCNT_ISR_IRAM_SAFE=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
-# FreeRTOS — leave second core enabled
+# FreeRTOS — 1kHz tick for 5ms control loop
+CONFIG_FREERTOS_HZ=1000
 CONFIG_FREERTOS_UNICORE=n
 
 # Log level

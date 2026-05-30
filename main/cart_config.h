@@ -22,7 +22,7 @@ extern "C" {
  * 1. FEATURE ENABLES (compile-time on/off)
  *===========================================================================*/
 
-#define CFG_ENABLE_RPM                1       /* 1 = RPM sensor enabled, 0 = disabled */
+#define CFG_ENABLE_RPM                0       /* 1 = RPM sensor enabled, 0 = disabled */
 #define CFG_ENABLE_OLED               1       /* 1 = OLED display enabled, 0 = disabled */
 #define CFG_ENABLE_STEERING_FEEDBACK  0       /* 1 = position encoder on steering, 0 = open-loop step counting */
 
@@ -31,11 +31,12 @@ extern "C" {
  *===========================================================================*/
 
 /* --- RC Receiver Inputs (RMT RX) --- */
-#define GPIO_RC_CH1                  9       /* Channel 1: Steering stick (analog) */
-#define GPIO_RC_CH2                  10      /* Channel 2: Throttle stick (analog) */
-#define GPIO_RC_CH3                  11      /* Channel 3: Brake (analog) */
-#define GPIO_RC_CH4                  12      /* Channel 4: Engine START switch (discrete) */
-#define GPIO_RC_CH5                  13      /* Channel 5: Lights / spare (discrete) */
+#define GPIO_RC_CH1                  9       /* Ch1: Steering stick */
+#define GPIO_RC_CH2                  10      /* Ch2: Spare */
+#define GPIO_RC_CH3                  11      /* Ch3: Throttle+Brake combined stick */
+#define GPIO_RC_CH4                  12      /* Ch4: Spare */
+#define GPIO_RC_CH5                  13      /* Ch5: Spare */
+#define GPIO_RC_CH6                  1       /* Ch6: Engine start/shutdown toggle */
 
 /* --- Steering Motor (Step/Direction) --- */
 #define GPIO_STEP                    4       /* Step pulse output (RMT TX ch0) */
@@ -76,13 +77,16 @@ extern "C" {
  * 3. RC RECEIVER CONFIGURATION
  *===========================================================================*/
 
-#define RC_NUM_CHANNELS              5       /* Total RC channels to monitor */
+#define RC_NUM_CHANNELS              6       /* Total RC channels to monitor */
+#define RC_MAX_SUBSCRIPTIONS         12      /* Max callback subscriptions */
 #define RC_EXPECTED_FRAME_MS         20      /* Standard 50Hz frame rate */
 
 /* Pulse width thresholds (microseconds) */
 #define RC_MIN_VALID_US              800     /* Below this = signal loss / no signal */
 #define RC_MAX_VALID_US              2200    /* Above this = invalid / glitch */
-#define RC_CENTER_US                 1500    /* Neutral position */
+#define RC_CENTER_US                 1530    /* Neutral position (hardware default, calibrated at boot) */
+#define RC_CALIBRATE_SAMPLES         50      /* Samples collected for steering center auto-calibration */
+#define RC_CALIBRATE_TIMEOUT_MS      2000    /* Max wait for valid signal during calibration */
 
 /* Discrete channel thresholds */
 #define RC_DISCRETE_OFF_THRESHOLD_US 1300    /* Below this = switch OFF */
@@ -93,12 +97,14 @@ extern "C" {
 #define RC_SIGNAL_LOSS_TIMEOUT_MS    50      /* No valid pulse within this = signal lost */
 #define RC_SIGNAL_RECOVERY_MS        200     /* Must have valid signal this long to recover */
 
-/*=== Channel mapping ===*/
-#define RC_CHAN_STEERING             0       /* Array index for steering */
-#define RC_CHAN_THROTTLE             1       /* Array index for throttle */
-#define RC_CHAN_BRAKE                2       /* Array index for brake */
-#define RC_CHAN_ENGINE_START         3       /* Array index for engine start */
-#define RC_CHAN_LIGHTS               4       /* Array index for lights */
+/* Deadband per channel type */
+#define RC_DEADBAND_STICK_US         40      /* Analog stick: ignore jitter below this */
+#define RC_DEADBAND_TOGGLE_US        200     /* Discrete switch: ignore jitter below this */
+
+/*=== Channel indices (0-based, matching GPIO_RC_CHx array order) ===*/
+#define RC_IDX_STEERING              0       /* Ch1 — steering stick */
+#define RC_IDX_THROTTLE_BRAKE        2       /* Ch3 — combined throttle+brake stick */
+#define RC_IDX_STARTER               5       /* Ch6 — engine start/shutdown toggle */
 
 /*===========================================================================
  * 4. SERVO CONFIGURATION
@@ -117,9 +123,6 @@ extern "C" {
 /* Brake servo mapping */
 #define BRAKE_RELEASED_US            1000    /* Pulse width when brake is released */
 #define BRAKE_FULL_US                2000    /* Pulse width when brake is fully engaged */
-
-/* Deadband: ignore small stick movements (±this many us from center) */
-#define RC_STICK_DEADBAND_US         40
 
 /*===========================================================================
  * 5. STEERING MOTOR CONFIGURATION (StepperOnline Step/Dir)
@@ -156,11 +159,11 @@ extern "C" {
 /* Starter motor */
 #define STARTER_MAX_CRANK_MS         3000    /* Maximum time starter may be engaged */
 #define STARTER_COOLDOWN_MS          5000    /* Wait time before allowing re-crank */
-#define STARTER_RELAY_ACTIVE_LEVEL   1       /* 1 = HIGH engages starter relay */
+#define STARTER_RELAY_ACTIVE_LEVEL   0       /* 0 = LOW engages starter relay (drives optocoupler) */
 
 /* Ignition kill */
 #define IGNITION_KILL_PULSE_MS       500     /* Pulse duration to kill engine */
-#define IGNITION_KILL_ACTIVE_LEVEL   1       /* 1 = HIGH kills engine */
+#define IGNITION_KILL_ACTIVE_LEVEL   0       /* 0 = LOW kills engine (drives optocoupler) */
 
 /* RPM measurement */
 #if CFG_ENABLE_RPM
@@ -193,7 +196,7 @@ extern "C" {
 #if CFG_ENABLE_OLED
 #define OLED_I2C_ADDR                0x3C    /* SH1106 7-bit I2C address */
 #define OLED_I2C_PORT                I2C_NUM_0
-#define OLED_I2C_FREQ_HZ             400000  /* 400 kHz fast mode */
+#define OLED_I2C_FREQ_HZ             100000  /* 100 kHz — works with internal pull-ups */
 #define OLED_WIDTH                   128
 #define OLED_HEIGHT                  64
 #define OLED_PAGES                   8       /* 64/8 = 8 pages */
@@ -214,12 +217,6 @@ extern "C" {
 #define RMT_MAX_STEPS_PER_CMD        255         /* Max steps per command */
 #define RMT_MAX_SYMBOL_TICKS         32000       /* Max ticks per RMT symbol (15-bit limit) */
 #define RMT_MIN_CMD_TICKS            3200
-
-/* RMT RX (RC receiver inputs) */
-#define RMT_RX_RESOLUTION_HZ         1000000     /* 1 MHz = 1 us per tick for PWM measurement */
-#define RMT_RX_CHANNEL_BASE          2           /* Starting channel for RC inputs (ch2..ch6) */
-#define RMT_RX_MIN_NS                500000      /* 500 us = shortest valid RC pulse */
-#define RMT_RX_MAX_NS                2500000     /* 2500 us = longest valid RC pulse */
 
 /*===========================================================================
  * 10. FREERTOS TASK CONFIGURATION
@@ -249,18 +246,15 @@ extern "C" {
  * 11. SYSTEM CONSTANTS
  *===========================================================================*/
 
-#define FIRMWARE_VERSION             "0.1.0"
+#define FIRMWARE_VERSION             "0.2.0"
 #define FIRMWARE_NAME                "RC Cart Controller"
 
 /*===========================================================================
  * 12. COMPILE-TIME VALIDATION
  *===========================================================================*/
 
-/* Verify steering angle is reasonable (use integer to avoid float-in-preprocessor) */
 _Static_assert(STEERING_MAX_ANGLE_DEG > 4 && STEERING_MAX_ANGLE_DEG < 91,
                "STEERING_MAX_ANGLE_DEG must be between 5 and 90");
-
-/* Verify servo pulse range is valid */
 _Static_assert(SERVO_MIN_PULSE_US >= 500 && SERVO_MAX_PULSE_US <= 2500,
                "Servo pulse range looks suspicious. Standard is 500-2500 us");
 

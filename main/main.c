@@ -2,11 +2,16 @@
  * @file main.c
  * @brief RC Cart Controller — ESP32-S3 firmware entry point
  *
+ * Architecture (callback-driven):
+ *   Each function module subscribes to its RC channel via rc_input_subscribe().
+ *   rc_input_process_callbacks() fires callbacks from control_task at 5ms.
+ *   Adding a new function = subscribe + callback handler — zero changes here.
+ *
  * Task layout:
- *   Core 0: control_task  — reads RC, updates servos & steering, engine logic
+ *   Core 0: control_task  — rc_input_process_callbacks() + engine_update() + failsafe
  *   Core 0: safety_task   — E-stop, signal loss monitoring
  *   Core 1: display_task  — OLED refresh
- *   Core 1: ramp_task     — RMT step pulse generator (spawned by rmt_pulse_gen)
+ *   Core 1: ramp_task     — RMT step pulse generator (spawned internally)
  */
 
 #include "cart_config.h"
@@ -28,7 +33,6 @@ static const char *TAG = "main";
 static bool s_failsafe_active = false;
 static bool s_estop_was_active = false;
 
-/* ---- Helper: map RC pulse to percent ---- */
 static uint16_t map_to_percent(uint16_t pulse, uint16_t min_us, uint16_t max_us)
 {
     if (pulse <= min_us) return 0;
@@ -36,63 +40,24 @@ static uint16_t map_to_percent(uint16_t pulse, uint16_t min_us, uint16_t max_us)
     return (uint16_t)((pulse - min_us) * 100UL / (max_us - min_us));
 }
 
-/* ---- Control Task (Core 0) ---- */
+/* ---- Control Task (Core 0, 5ms) ---- */
 static void control_task(void *arg)
 {
+    (void)arg;
     TickType_t period = pdMS_TO_TICKS(TASK_PERIOD_CONTROL_MS);
     TickType_t last_wake = xTaskGetTickCount();
 
-    ESP_LOGI(TAG, "Control task started on Core %d", xPortGetCoreID());
+    ESP_LOGI(TAG, "Control task on Core %d", xPortGetCoreID());
 
     while (1) {
         vTaskDelayUntil(&last_wake, period);
 
-        /* --- Read RC inputs --- */
-        uint16_t steer_us = RC_CENTER_US;
-        uint16_t throttle_us = THROTTLE_IDLE_US;
-        uint16_t brake_us = BRAKE_RELEASED_US;
-        bool start_req = false;
-        bool lights_on = false;
+        /* Fire all RC channel subscriptions */
+        rc_input_process_callbacks();
+
+        /* Check signal and handle failsafe */
         bool signal_ok = rc_input_is_signal_ok();
-
-        if (signal_ok) {
-            rc_input_get_pulse(RC_CHAN_STEERING, &steer_us);
-            rc_input_get_pulse(RC_CHAN_THROTTLE, &throttle_us);
-            rc_input_get_pulse(RC_CHAN_BRAKE, &brake_us);
-            start_req = rc_input_is_discrete_on(RC_CHAN_ENGINE_START);
-            lights_on = rc_input_is_discrete_on(RC_CHAN_LIGHTS);
-
-            s_failsafe_active = false;
-
-            /* --- Steering update --- */
-            steering_update(steer_us);
-
-            /* --- Servo update --- */
-            uint16_t throttle_pulse = THROTTLE_IDLE_US;
-            uint16_t brake_pulse = BRAKE_RELEASED_US;
-
-            /* Throttle mapping: RC stick up = more gas */
-            if (throttle_us > RC_CENTER_US + RC_STICK_DEADBAND_US) {
-                throttle_pulse = throttle_us;
-                brake_pulse = BRAKE_RELEASED_US;
-            }
-            /* Brake mapping: RC stick down = more brake */
-            else if (brake_us > RC_CENTER_US + RC_STICK_DEADBAND_US) {
-                throttle_pulse = THROTTLE_IDLE_US;
-                brake_pulse = brake_us;
-            }
-
-            /* Clamp */
-            if (throttle_pulse < THROTTLE_IDLE_US) throttle_pulse = THROTTLE_IDLE_US;
-            if (throttle_pulse > THROTTLE_FULL_US) throttle_pulse = THROTTLE_FULL_US;
-            if (brake_pulse < BRAKE_RELEASED_US) brake_pulse = BRAKE_RELEASED_US;
-            if (brake_pulse > BRAKE_FULL_US) brake_pulse = BRAKE_FULL_US;
-
-            servo_set_throttle(throttle_pulse);
-            servo_set_brake(brake_pulse);
-
-        } else {
-            /* --- Failsafe --- */
+        if (!signal_ok) {
             if (!s_failsafe_active) {
                 ESP_LOGW(TAG, "SIGNAL LOST — entering failsafe");
                 s_failsafe_active = true;
@@ -100,34 +65,46 @@ static void control_task(void *arg)
                 servo_failsafe();
                 engine_kill();
             }
+        } else {
+            s_failsafe_active = false;
         }
 
-        /* --- Engine control --- */
-        engine_update(start_req);
+        /* Engine state machine tick */
+        engine_update();
 
-        /* --- Lights --- */
-        gpio_set_level(GPIO_LIGHTS_RELAY, lights_on ? 1 : 0);
-
-        /* --- LED status --- */
+        /* LED status */
+        static int debug_tick = 0;
         static int led_toggle = 0;
         led_toggle = (led_toggle + 1) % 50;
-        if (!signal_ok && (led_toggle < 25)) {
-            gpio_set_level(GPIO_LED_STATUS, LED_ACTIVE_LEVEL);
-        } else if (signal_ok && engine_get_state() == ENGINE_RUNNING) {
-            gpio_set_level(GPIO_LED_STATUS, LED_ACTIVE_LEVEL);
-        } else {
-            gpio_set_level(GPIO_LED_STATUS, !LED_ACTIVE_LEVEL);
+        debug_tick++;
+
+        gpio_set_level(GPIO_LED_STATUS,
+            (!signal_ok && (led_toggle < 25)) ||
+            (signal_ok && engine_get_state() == ENGINE_RUNNING)
+                ? LED_ACTIVE_LEVEL : !LED_ACTIVE_LEVEL);
+
+        /* Periodic debug dump (every ~1s = 200 cycles × 5ms) */
+        if (debug_tick >= 200) {
+            debug_tick = 0;
+            uint16_t ch1, ch3, ch6;
+            bool ok1 = rc_input_get_pulse(RC_IDX_STEERING, &ch1);
+            bool ok3 = rc_input_get_pulse(RC_IDX_THROTTLE_BRAKE, &ch3);
+            bool ok6 = rc_input_get_pulse(RC_IDX_STARTER, &ch6);
+            ESP_LOGI(TAG, "RC Ch1=%u Ch3=%u Ch6=%u | signal=%s engine=%d",
+                     ok1 ? ch1 : 0, ok3 ? ch3 : 0, ok6 ? ch6 : 0,
+                     signal_ok ? "OK" : "LOST", engine_get_state());
         }
     }
 }
 
-/* ---- Safety Task (Core 0) ---- */
+/* ---- Safety Task (Core 0, 5ms) ---- */
 static void safety_task(void *arg)
 {
+    (void)arg;
     TickType_t period = pdMS_TO_TICKS(TASK_PERIOD_SAFETY_MS);
     TickType_t last_wake = xTaskGetTickCount();
 
-    ESP_LOGI(TAG, "Safety task started on Core %d", xPortGetCoreID());
+    ESP_LOGI(TAG, "Safety task on Core %d", xPortGetCoreID());
 
     while (1) {
         vTaskDelayUntil(&last_wake, period);
@@ -141,7 +118,6 @@ static void safety_task(void *arg)
                 steering_stop();
                 servo_failsafe();
                 engine_kill();
-                gpio_set_level(GPIO_LED_STATUS, 1);  /* Solid LED */
             }
         } else {
             s_estop_was_active = false;
@@ -156,13 +132,14 @@ static void safety_task(void *arg)
     }
 }
 
-/* ---- Display Task (Core 1) ---- */
+/* ---- Display Task (Core 1, 100ms) ---- */
 static void display_task(void *arg)
 {
+    (void)arg;
     TickType_t period = pdMS_TO_TICKS(TASK_PERIOD_DISPLAY_MS);
     TickType_t last_wake = xTaskGetTickCount();
 
-    ESP_LOGI(TAG, "Display task started on Core %d", xPortGetCoreID());
+    ESP_LOGI(TAG, "Display task on Core %d", xPortGetCoreID());
 
     while (1) {
         vTaskDelayUntil(&last_wake, period);
@@ -170,14 +147,25 @@ static void display_task(void *arg)
         display_state_t ds;
         memset(&ds, 0, sizeof(ds));
 
-        rc_input_get_pulse(RC_CHAN_STEERING, &ds.rc_steer_us);
-        rc_input_get_pulse(RC_CHAN_THROTTLE, &ds.rc_throttle_us);
-        rc_input_get_pulse(RC_CHAN_BRAKE, &ds.rc_brake_us);
+        rc_input_get_pulse(RC_IDX_STEERING, &ds.rc_steer_us);
+        ds.rc_throttle_brake_us = servo_get_combined_pulse_us();
         ds.rc_signal_ok = rc_input_is_signal_ok();
 
         ds.steering_angle_deg = steering_get_angle_deg();
-        ds.throttle_pct = map_to_percent(ds.rc_throttle_us, RC_CENTER_US, RC_MAX_VALID_US);
-        ds.brake_pct = map_to_percent(ds.rc_brake_us, RC_CENTER_US, RC_MAX_VALID_US);
+
+        /* Compute throttle/brake pct from combined stick value */
+        uint16_t tb = ds.rc_throttle_brake_us;
+        if (tb > RC_CENTER_US + RC_DEADBAND_STICK_US) {
+            ds.throttle_pct = map_to_percent(tb, RC_CENTER_US, RC_MAX_VALID_US);
+            ds.brake_pct = 0;
+        } else if (tb < RC_CENTER_US - RC_DEADBAND_STICK_US) {
+            ds.throttle_pct = 0;
+            ds.brake_pct = map_to_percent(tb, RC_MIN_VALID_US, RC_CENTER_US);
+        } else {
+            ds.throttle_pct = 0;
+            ds.brake_pct = 0;
+        }
+
         ds.rpm = engine_get_rpm();
         ds.engine_running = (engine_get_state() == ENGINE_RUNNING);
         ds.estop_active = safety_is_estop_active();
@@ -195,9 +183,8 @@ static void display_task(void *arg)
 
         display_update(&ds);
 
-        /* If RC stick is moving, notify display activity */
         if (ds.rc_steer_us > RC_CENTER_US + 100 || ds.rc_steer_us < RC_CENTER_US - 100 ||
-            ds.rc_throttle_us > RC_CENTER_US + 100 || ds.rc_brake_us > RC_CENTER_US + 100) {
+            ds.rc_throttle_brake_us > RC_CENTER_US + 100 || ds.rc_throttle_brake_us < RC_CENTER_US - 100) {
             display_notify_activity();
         }
     }
@@ -211,7 +198,6 @@ void app_main(void)
     ESP_LOGI(TAG, "  Target: ESP32-S3");
     ESP_LOGI(TAG, "============================================");
 
-    /* GPIO init: LED and lights relay */
     gpio_config_t led_conf = {
         .pin_bit_mask = (1ULL << GPIO_LED_STATUS) | (1ULL << GPIO_LIGHTS_RELAY),
         .mode = GPIO_MODE_OUTPUT,
@@ -223,9 +209,17 @@ void app_main(void)
     gpio_set_level(GPIO_LED_STATUS, !LED_ACTIVE_LEVEL);
     gpio_set_level(GPIO_LIGHTS_RELAY, 0);
 
-    /* Initialize subsystems */
-    ESP_LOGI(TAG, "Initializing RC input...");
+    ESP_LOGI(TAG, "Initializing RC input (6 channels)...");
     ESP_ERROR_CHECK(rc_input_init());
+
+    ESP_LOGI(TAG, "Calibrating steering center (set wheels straight)...");
+    uint16_t center_us = RC_CENTER_US;
+    if (rc_input_calibrate_center(&center_us) == ESP_OK) {
+        ESP_LOGI(TAG, "Steering center: %u us", center_us);
+        steering_set_center_us(center_us);
+    } else {
+        ESP_LOGW(TAG, "Calibration failed — default %u us", center_us);
+    }
 
     ESP_LOGI(TAG, "Initializing servos...");
     ESP_ERROR_CHECK(servo_init());
@@ -240,9 +234,10 @@ void app_main(void)
     ESP_ERROR_CHECK(safety_init());
 
     ESP_LOGI(TAG, "Initializing display...");
-    ESP_ERROR_CHECK(display_init());
+    if (display_init() != ESP_OK) {
+        ESP_LOGW(TAG, "Display not found — continuing without OLED");
+    }
 
-    /* Create tasks */
     xTaskCreatePinnedToCore(control_task, "control", TASK_STACK_CONTROL,
                             NULL, TASK_PRIO_CONTROL, NULL, CORE_CONTROL);
     xTaskCreatePinnedToCore(safety_task, "safety", TASK_STACK_SAFETY,
@@ -250,15 +245,5 @@ void app_main(void)
     xTaskCreatePinnedToCore(display_task, "display", TASK_STACK_DISPLAY,
                             NULL, TASK_PRIO_DISPLAY, NULL, CORE_DISPLAY);
 
-    ESP_LOGI(TAG, "All tasks started. Ready.");
-
-    /* Wait for RC signal before enabling outputs */
-    while (!rc_input_is_signal_ok()) {
-        ESP_LOGI(TAG, "Waiting for RC signal...");
-        gpio_set_level(GPIO_LED_STATUS, 1);
-        vTaskDelay(pdMS_TO_TICKS(250));
-        gpio_set_level(GPIO_LED_STATUS, 0);
-        vTaskDelay(pdMS_TO_TICKS(250));
-    }
-    ESP_LOGI(TAG, "RC signal detected — system armed");
+    ESP_LOGI(TAG, "All tasks started. SYSTEM ARMED.");
 }

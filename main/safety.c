@@ -36,7 +36,7 @@ esp_err_t safety_init(void)
         return ret;
     }
 
-    gpio_install_isr_service(0);
+    /* ISR service already installed by rc_input_init */
     gpio_isr_handler_add(GPIO_ESTOP, estop_isr, NULL);
 
     s_estop_active = (gpio_get_level(GPIO_ESTOP) == 0);
