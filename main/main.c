@@ -22,6 +22,7 @@
 #include "safety.h"
 #include "display.h"
 
+#include "driver/rmt_tx.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -32,6 +33,54 @@ static const char *TAG = "main";
 
 static bool s_failsafe_active = false;
 static bool s_estop_was_active = false;
+static rmt_channel_handle_t s_rgb_chan = NULL;
+static rmt_encoder_handle_t s_rgb_encoder = NULL;
+
+/* ---- WS2812 RGB LED helper ---- */
+static esp_err_t rgb_led_init(void)
+{
+    rmt_tx_channel_config_t tx_cfg = {
+        .gpio_num = GPIO_RGB_LED,
+        .clk_src = RMT_CLK_SRC_DEFAULT,
+        .resolution_hz = 10000000,  /* 10 MHz = 100 ns per tick */
+        .mem_block_symbols = 64,
+        .trans_queue_depth = 4,
+    };
+    ESP_ERROR_CHECK(rmt_new_tx_channel(&tx_cfg, &s_rgb_chan));
+
+    rmt_bytes_encoder_config_t enc_cfg = {
+        .bit0 = { .duration0 = 4, .level0 = 1, .duration1 = 8, .level1 = 0 },  /* 400ns H, 800ns L */
+        .bit1 = { .duration0 = 8, .level0 = 1, .duration1 = 4, .level1 = 0 },  /* 800ns H, 400ns L */
+        .flags.msb_first = 1,
+    };
+    ESP_ERROR_CHECK(rmt_new_bytes_encoder(&enc_cfg, &s_rgb_encoder));
+    ESP_ERROR_CHECK(rmt_enable(s_rgb_chan));
+    return ESP_OK;
+}
+
+static void rgb_led_set(uint8_t r, uint8_t g, uint8_t b)
+{
+    uint8_t grb[3] = { g, r, b };
+    rmt_transmit_config_t tx_cfg = { .loop_count = 0 };
+    rmt_transmit(s_rgb_chan, s_rgb_encoder, grb, 3, &tx_cfg);
+    rmt_tx_wait_all_done(s_rgb_chan, 10);
+}
+
+/* ---- RGB LED status patterns ---- */
+static void rgb_led_update(bool signal_ok, bool estop, bool engine_running, bool failsafe)
+{
+    if (estop) {
+        rgb_led_set(255, 0, 0);    /* solid red = E-stop */
+    } else if (failsafe || !signal_ok) {
+        static int blink = 0;
+        blink = (blink + 1) % 100;
+        rgb_led_set(blink < 50 ? 255 : 0, 0, 0);  /* fast blink red */
+    } else if (engine_running) {
+        rgb_led_set(0, 255, 0);    /* green = running */
+    } else {
+        rgb_led_set(0, 0, 255);    /* blue = armed, signal OK */
+    }
+}
 
 /* ---- Control Task (Core 0, 5ms) ---- */
 static void control_task(void *arg)
@@ -54,25 +103,24 @@ static void control_task(void *arg)
             if (!s_failsafe_active) {
                 ESP_LOGW(TAG, "SIGNAL LOST — entering failsafe");
                 s_failsafe_active = true;
-                steering_stop();
+                steering_disable();
                 servo_failsafe();
                 engine_kill();
             }
         } else {
-            s_failsafe_active = false;
+            if (s_failsafe_active) {
+                s_failsafe_active = false;
+                steering_enable();
+                ESP_LOGI(TAG, "Signal recovered — steering re-enabled");
+            }
         }
 
         /* Engine state machine tick */
         engine_update();
 
-        /* LED status */
-        static int led_toggle = 0;
-        led_toggle = (led_toggle + 1) % 50;
-
-        gpio_set_level(GPIO_LED_STATUS,
-            (!signal_ok && (led_toggle < 25)) ||
-            (signal_ok && engine_get_state() == ENGINE_RUNNING)
-                ? LED_ACTIVE_LEVEL : !LED_ACTIVE_LEVEL);
+        /* RGB LED status */
+        rgb_led_update(signal_ok, s_estop_was_active,
+                       engine_get_state() == ENGINE_RUNNING, s_failsafe_active);
     }
 }
 
@@ -94,7 +142,7 @@ static void safety_task(void *arg)
             if (!s_estop_was_active) {
                 s_estop_was_active = true;
                 ESP_LOGW(TAG, "E-STOP ACTIVE");
-                steering_stop();
+                steering_disable();
                 servo_failsafe();
                 engine_kill();
             }
@@ -104,7 +152,7 @@ static void safety_task(void *arg)
 
         if (event == SAFETY_SIGNAL_LOST && !s_failsafe_active) {
             s_failsafe_active = true;
-            steering_stop();
+            steering_disable();
             servo_failsafe();
             engine_kill();
         }
@@ -165,16 +213,20 @@ void app_main(void)
     ESP_LOGI(TAG, "  Target: ESP32-S3");
     ESP_LOGI(TAG, "============================================");
 
-    gpio_config_t led_conf = {
-        .pin_bit_mask = (1ULL << GPIO_LED_STATUS) | (1ULL << GPIO_LIGHTS_RELAY),
+    /* GPIO outputs (lights relay only — RGB LED uses RMT) */
+    gpio_config_t out_conf = {
+        .pin_bit_mask = (1ULL << GPIO_LIGHTS_RELAY),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
-    gpio_config(&led_conf);
-    gpio_set_level(GPIO_LED_STATUS, !LED_ACTIVE_LEVEL);
+    gpio_config(&out_conf);
     gpio_set_level(GPIO_LIGHTS_RELAY, 0);
+
+    ESP_LOGI(TAG, "Initializing RGB LED...");
+    ESP_ERROR_CHECK(rgb_led_init());
+    rgb_led_set(0, 0, 128);  /* dim blue = booting */
 
     ESP_LOGI(TAG, "Initializing RC input (6 channels)...");
     ESP_ERROR_CHECK(rc_input_init());

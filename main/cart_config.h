@@ -28,50 +28,70 @@ extern "C" {
 
 /*===========================================================================
  * 2. GPIO PIN ASSIGNMENTS
+ *
+ * Board layout (ESP32-S3-DevKit-C):
+ *   Left header  — Cart connections: RC, motor, servos, relays, limit switches
+ *   Right header — Board peripherals: I2C, encoder, safety, LED
  *===========================================================================*/
 
-/* --- RC Receiver Inputs (RMT RX) --- */
+/* === Left header: Cart connections === */
+
+/* Steering motor: Step/Dir/Enable (4,5,6 consecutive) */
+#define GPIO_STEP                    4       /* Step pulse (RMT TX ch0) */
+#define GPIO_STEP_DIR                5       /* Direction */
+#define GPIO_STEP_ENABLE             6       /* Enable (HIGH = motor on) */
+
+/* Servo PWM outputs */
+#define GPIO_SERVO_THROTTLE          7       /* Throttle servo (LEDC) */
+#define GPIO_SERVO_BRAKE             15      /* Brake servo (LEDC) */
+
+/* RC receiver inputs (9-14 consecutive) */
 #define GPIO_RC_CH1                  9       /* Ch1: Steering stick */
 #define GPIO_RC_CH2                  10      /* Ch2: Spare */
 #define GPIO_RC_CH3                  11      /* Ch3: Throttle+Brake combined stick */
 #define GPIO_RC_CH4                  12      /* Ch4: Spare */
 #define GPIO_RC_CH5                  13      /* Ch5: Spare */
-#define GPIO_RC_CH6                  1       /* Ch6: Engine start/shutdown toggle */
+#define GPIO_RC_CH6                  14      /* Ch6: Engine start/shutdown toggle */
 
-/* --- Steering Motor (Step/Direction) --- */
-#define GPIO_STEP                    4       /* Step pulse output (RMT TX ch0) */
-#define GPIO_STEP_DIR                5       /* Direction output */
+/* Relay outputs */
+#define GPIO_STARTER_RELAY           17      /* Starter motor relay (active LOW) */
+#define GPIO_IGNITION_KILL           18      /* Ignition kill relay (active LOW) */
 
-/* --- Servo Outputs (LEDC, 50Hz PWM) --- */
-#define GPIO_SERVO_THROTTLE          6       /* Throttle servo */
-#define GPIO_SERVO_BRAKE             7       /* Brake servo */
+/* Limit switches (cart-mounted, left header) */
+#define GPIO_LIMIT_LEFT              8       /* Steering left endstop (active LOW) */
+#define GPIO_LIMIT_RIGHT             16      /* Steering right endstop (active LOW) */
 
-/* --- Engine Control --- */
-#define GPIO_STARTER_RELAY           8       /* Starter motor relay (HIGH = active) */
-#define GPIO_IGNITION_KILL           14      /* Ignition kill relay (HIGH = kill engine) */
+/* === Right header: Board peripherals === */
 
-/* --- Lights / Auxiliary --- */
-#define GPIO_LIGHTS_RELAY            15      /* Lights relay (HIGH = on) */
-
-/* --- RPM Sensor (PCNT) --- */
+/* RPM sensor */
 #if CFG_ENABLE_RPM
-#define GPIO_RPM_PULSE               16      /* RPM pulse input from comparator/sensor */
+#define GPIO_RPM_PULSE               1       /* RPM pulse input (PCNT, from comparator) */
 #endif
 
-/* --- I2C OLED Display --- */
+/* E-Stop */
+#define GPIO_ESTOP                   1       /* E-Stop (active LOW, pulled up) */
+#if CFG_ENABLE_RPM
+#undef GPIO_ESTOP
+#define GPIO_ESTOP                   2       /* E-Stop fallback when RPM uses GPIO 1 */
+#endif
+
+/* Rotary encoder (consecutive 40-42) */
+#define GPIO_ENC_A                   42      /* Encoder phase A (CLK) */
+#define GPIO_ENC_B                   41      /* Encoder phase B (DT) */
+#define GPIO_ENC_BTN                 40      /* Encoder push button (SW, active LOW) */
+
+/* I2C OLED (consecutive 38-39) */
 #if CFG_ENABLE_OLED
-#define GPIO_I2C_SDA                 17
-#define GPIO_I2C_SCL                 18
+#define GPIO_I2C_SDA                 38
+#define GPIO_I2C_SCL                 39
 #endif
 
-/* --- Safety Inputs --- */
-#define GPIO_ESTOP                   21      /* Emergency stop (active LOW, pulled up) */
-#define GPIO_LIMIT_LEFT              47      /* Steering left endstop (active LOW) */
-#define GPIO_LIMIT_RIGHT             48      /* Steering right endstop (active LOW) */
+/* Built-in WS2812 RGB LED */
+#define GPIO_RGB_LED                 48      /* WS2812 addressable LED */
+#define RGB_LED_RMT_CHANNEL          1       /* RMT channel (ch0 used for step gen) */
 
-/* --- Status LED --- */
-#define GPIO_LED_STATUS              38      /* Status indicator */
-#define LED_ACTIVE_LEVEL             1       /* 1 = HIGH turns LED on */
+/* Lights relay (right header — freed left-side pins for limit switches) */
+#define GPIO_LIGHTS_RELAY            47      /* Lights relay (active HIGH) */
 
 /*===========================================================================
  * 3. RC RECEIVER CONFIGURATION

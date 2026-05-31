@@ -2,45 +2,93 @@
 
 ESP32-S3 firmware for remote-controlling a gasoline cart/mini-buggy via standard hobby RC radio.
 
-- 2× 150kg servos (throttle, brake) via 50Hz PWM
-- 1× StepperOnline 400W step/dir servo (steering) via RMT
-- 5-ch RC receiver input (RMT RX) + optional RPM sensor (PCNT)
+- 2x 150kg servos (throttle, brake) via 50Hz PWM
+- 1x StepperOnline 400W step/dir servo (steering) via RMT
+- 6-ch RC receiver input (GPIO edge interrupts)
 - SH1106 128x64 OLED display (I2C)
-- Engine starter + ignition kill control
+- Engine starter + ignition kill control (active LOW for optocouplers)
+- Built-in WS2812 RGB LED status indicator
 - Failsafe on signal loss, E-stop support
+- Steering enable — disables motor on signal loss
 
 ---
 
-## Pinout
+## Pinout (ESP32-S3-DevKit-C)
+
+### Left Header — Cart Connections
+
+| GPIO | Dir | Function | Details |
+|------|-----|----------|---------|
+| **4** | OUT | STEP | Steering motor step pulse (RMT TX) |
+| **5** | OUT | DIR | Steering motor direction |
+| **6** | OUT | ENA | Steering motor enable (HIGH=on) |
+| **7** | OUT | Servo T | Throttle servo (LEDC, 50Hz) |
+| **8** | IN | Lim L | Steering left limit switch (active LOW) |
+| **9** | IN | RC Ch1 | Steering stick |
+| **10** | IN | RC Ch2 | Spare |
+| **11** | IN | RC Ch3 | Throttle+Brake combined stick |
+| **12** | IN | RC Ch4 | Spare |
+| **13** | IN | RC Ch5 | Spare |
+| **14** | IN | RC Ch6 | Engine start/shutdown toggle |
+| **15** | OUT | Servo B | Brake servo (LEDC, 50Hz) |
+| **16** | IN | Lim R | Steering right limit switch (active LOW) |
+| **17** | OUT | Starter | Starter relay (active LOW, optocoupler) |
+| **18** | OUT | Ign Kill | Ignition kill relay (active LOW, optocoupler) |
+
+### Right Header — Board Peripherals
+
+| GPIO | Dir | Function | Details |
+|------|-----|----------|---------|
+| **1** | IN | E-Stop | Emergency stop (active LOW, pulled up) |
+| **2** | — | free | Spare / E-Stop fallback if RPM uses GPIO 1 |
+| **21** | — | free | Available |
+| **38** | I/O | I2C SDA | SH1106 OLED |
+| **39** | I/O | I2C SCL | SH1106 OLED |
+| **40** | IN | Enc Btn | Rotary encoder push button (SW) |
+| **41** | IN | Enc B | Rotary encoder phase B (DT) |
+| **42** | IN | Enc A | Rotary encoder phase A (CLK) |
+| **47** | OUT | Lights | Lights relay (active HIGH) |
+| **48** | OUT | RGB LED | Built-in WS2812 (addressable RGB) |
+
+### GPIO Groups by Purpose
 
 ```
-ESP32-S3                        Function
-┌───────────────────┐
-│ GPIO  4 → STEP   │──▶ StepperOnline PUL+ (steering motor step pulse)
-│ GPIO  5 → DIR    │──▶ StepperOnline DIR+ (steering motor direction)
-│ GPIO  6 → Servo1 │──▶ Throttle servo signal (LEDC, 50Hz)
-│ GPIO  7 → Servo2 │──▶ Brake servo signal (LEDC, 50Hz)
-│ GPIO  8 → Relay1 │──▶ Starter motor relay (active HIGH)
-│ GPIO  9 → RC Ch1 │──◀ RC receiver Ch1 (steering stick)
-│ GPIO 10 → RC Ch2 │──◀ RC receiver Ch2 (throttle stick)
-│ GPIO 11 → RC Ch3 │──◀ RC receiver Ch3 (brake)
-│ GPIO 12 → RC Ch4 │──◀ RC receiver Ch4 (engine START switch, discrete)
-│ GPIO 13 → RC Ch5 │──◀ RC receiver Ch5 (lights / spare)
-│ GPIO 14 → Relay2 │──▶ Ignition kill relay (active HIGH)
-│ GPIO 15 → Relay3 │──▶ Lights relay (active HIGH)
-│ GPIO 16 → RPM    │──◀ RPM comparator input (ADXL/PCNT)
-│ GPIO 17 → SDA    │─── SH1106 OLED SDA
-│ GPIO 18 → SCL    │─── SH1106 OLED SCL
-│ GPIO 21 → E-Stop │──◀ Emergency stop button (active LOW, pull-up)
-│ GPIO 38 → LED    │──▶ Status LED (active HIGH)
-│ GPIO 47 → Lim L  │──◀ Steering left limit switch (active LOW)
-│ GPIO 48 → Lim R  │──◀ Steering right limit switch (active LOW)
-│                   │
-│ GND ──────────────│── Common ground for all peripherals
-│ 3.3V ─────────────│── Logic supply (do NOT power servos from this!)
-│ 5V ───────────────│── Servo power supply (separate high-current 5V)
-└───────────────────┘
+LEFT HEADER (cart wiring):
+  4-5-6      Steering step/dir/enable     (consecutive)
+  7          Throttle servo
+  15         Brake servo
+  8, 16      Limit switches               (cart-mounted)
+  17-18      Starter + ignition relays
+  9-14       RC receiver Ch1-Ch6          (consecutive)
+
+RIGHT HEADER (board peripherals):
+  1          E-Stop
+  38-39      I2C (SDA, SCL)              (adjacent)
+  40-41-42   Rotary encoder (Btn, B, A)   (consecutive)
+  47         Lights relay
+  48         RGB LED (built-in WS2812)
 ```
+
+### Free GPIOs
+
+| GPIO | Notes |
+|------|-------|
+| **2** | Right header — spare / E-Stop fallback |
+| **21** | Right header |
+| **16** | Used for Lim R when RPM disabled; if RPM enabled, move Lim R |
+| **33-37** | May be PSRAM on some modules — check your variant |
+
+### Strapping / Restricted Pins (DO NOT USE)
+
+| GPIO | Reason |
+|------|--------|
+| **0** | Boot mode — LOW = download mode |
+| **3** | JTAG control |
+| **19** | USB D- — needed for flashing/monitor |
+| **20** | USB D+ — needed for flashing/monitor |
+| **45** | VDD_SPI voltage |
+| **46** | Boot log — LOW suppresses bootloader output |
+| **26-32** | Flash/PSRAM — depends on module variant |
 
 ---
 
@@ -53,16 +101,16 @@ ESP32-S3                        Function
  5V PSU ─┤+            │
  GND    ─┤- (thick)    │
          │  150kg Servo │
-ESP32   ─┤signal        │  (white/yellow wire)
-GPIO 6  ─┤  (Throttle) │
+ ESP32   ─┤signal        │  (white/yellow wire)
+ GPIO 7  ─┤  (Throttle) │
          └─────────────┘
 
          ┌─────────────┐
  5V PSU ─┤+            │
  GND    ─┤- (thick)    │
          │  150kg Servo │
-ESP32   ─┤signal        │
-GPIO 7  ─┤  (Brake)    │
+ ESP32   ─┤signal        │
+ GPIO 15 ─┤  (Brake)    │
          └─────────────┘
 ```
 
@@ -75,15 +123,16 @@ ESP32-S3                           StepperOnline CL57T / iSV57T
 │ GND    ●──────────────────● PUL-│  Step-               │
 │ GPIO 5 ●─────── 1kΩ ─────● DIR+│  Direction+          │
 │ GND    ●──────────────────● DIR-│  Direction-          │
-│ GPIO   ●─────── (opt) ────● ENA+│  Enable+ (optional)  │
+│ GPIO 6 ●─────── 1kΩ ─────● ENA+│  Enable+             │
 │ GND    ●──────────────────● ENA-│  Enable-             │
 │ 48VDC  ●──────────────────● V+  │  Motor power         │
 │ GND    ●──────────────────● GND │                      │
 └────────────┘                    └─────────────────────┘
 
-NOTE: Use 1kΩ series resistors on PUL+/DIR+ to limit current.
+NOTE: Use 1kΩ series resistors on PUL+/DIR+/ENA+ to limit current.
       GPIOs are 3.3V; use level shifters if drive requires 5V signaling.
       Always connect GND between ESP32 and drive.
+      Steering enable: GPIO 6 HIGH = motor on, LOW = disabled (failsafe).
 ```
 
 ### RC Receiver Wiring
@@ -91,18 +140,19 @@ NOTE: Use 1kΩ series resistors on PUL+/DIR+ to limit current.
 ```
 RC Receiver                         ESP32-S3
 ┌──────────┐                      ┌──────────┐
-│ Ch1 (S)  │──────────────────────● GPIO 9   │
-│ Ch2 (T)  │──────────────────────● GPIO 10  │
-│ Ch3 (B)  │──────────────────────● GPIO 11  │
-│ Ch4 (St) │──────────────────────● GPIO 12  │
-│ Ch5 (L)  │──────────────────────● GPIO 13  │
+│ Ch1 (S)  │──────────────────────● GPIO 9   │  Steering
+│ Ch2      │──────────────────────● GPIO 10  │  Spare
+│ Ch3 (T/B)│──────────────────────● GPIO 11  │  Throttle+Brake combined
+│ Ch4      │──────────────────────● GPIO 12  │  Spare
+│ Ch5      │──────────────────────● GPIO 13  │  Spare
+│ Ch6 (St) │──────────────────────● GPIO 14  │  Engine start/shutdown
 │ GND      │──────────────────────● GND      │
 │ +5V/BAT  │── (from receiver     │          │
 │           │     own BEC/battery) │          │
 └──────────┘                      └──────────┘
 
 Standard RC PWM: 50Hz frame, 1.0-2.0ms pulse.
-Center = 1.5ms (neutral).
+All 6 channels are read via GPIO edge interrupts (1us accuracy).
 ```
 
 ### RPM Sensor Circuit (Comparator, THT)
@@ -160,7 +210,7 @@ Center = 1.5ms (neutral).
 
 ```
          ┌────────┐
-  3.3V ─┤ R 10kΩ ├──●── GPIO 21 (E-Stop)
+  3.3V ─┤ R 10kΩ ├──●── GPIO 1 (E-Stop)
          └────────┘  │
                      ├── NC contact ── GND   (push to OPEN)
                      │   (normally closed, opens on press)
@@ -292,26 +342,26 @@ Typical values:
      │   Display Task (100ms) │── SH1106 OLED refresh
      │   Ramp Task (5ms ISR)  │── Step pulse generation (RMT TX)
      │                        │
-     │  Outputs:              │
-     │   LEDC Ch0 → Throttle  │── 50Hz servo PWM
-     │   LEDC Ch1 → Brake     │── 50Hz servo PWM
-     │   RMT TX  → Steering   │── Step/Dir pulses
-     │   GPIO   → Starter relay, Ignition kill, Lights
-     │                        │
-     │  Inputs:               │
-     │   PCNT   → RPM pickup (Schmitt comparator)
-     │   GPIO   → E-Stop, Limit switches
+      │  Outputs:              │
+      │   LEDC Ch0 → Throttle  │── 50Hz servo PWM (GPIO 7)
+      │   LEDC Ch1 → Brake     │── 50Hz servo PWM (GPIO 15)
+      │   RMT TX  → Steering   │── Step/Dir pulses (GPIO 4/5/6)
+      │   RMT TX  → RGB LED    │── WS2812 built-in LED (GPIO 48)
+      │   GPIO   → Starter relay, Ignition kill, Lights
+      │                        │
+      │  Inputs:               │
+      │   GPIO   → RC Ch1-6 (9-14), E-Stop (1), Limit L/R (8,16)
      └────────────────────────┘
 ```
 
 ### Failsafe Behavior (Signal Loss)
 
-| Condition | Throttle | Brake | Steering | Engine | LEDs |
-|-----------|----------|-------|----------|--------|------|
-| RC signal OK | Normal | Normal | Normal | Normal | Slow blink |
-| RC signal lost | 1000us (idle) | 2000us (full) | Hold | Kill | Fast blink |
-| E-Stop pressed | Disabled | Disabled | Disabled | Kill | Solid on |
-| Boot (no signal) | Idle | Full brake | Center | Off | Slow blink |
+| Condition | Throttle | Brake | Steering | Engine | RGB LED |
+|-----------|----------|-------|----------|--------|---------|
+| RC signal OK | Normal | Normal | Normal | Normal | Green (running) / Blue (armed) |
+| RC signal lost | 1000us (idle) | 2000us (full) | Hold | Kill | Fast blink red |
+| E-Stop pressed | Disabled | Disabled | Disabled | Kill | Solid red |
+| Boot (no signal) | Idle | Full brake | Center | Off | Dim blue |
 
 ---
 

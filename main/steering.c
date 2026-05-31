@@ -62,6 +62,18 @@ esp_err_t steering_init(void)
     s_state = STEERING_IDLE;
     s_current_angle = 0.0f;
     s_current_pulses = 0;
+
+    /* Configure steering enable GPIO */
+    gpio_config_t ena_conf = {
+        .pin_bit_mask = (1ULL << GPIO_STEP_ENABLE),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,   /* LOW when unconfigured = safe (disabled) */
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&ena_conf);
+    gpio_set_level(GPIO_STEP_ENABLE, 1);  /* Default enabled */
+
     s_initialized = true;
 
     /* Subscribe to steering channel */
@@ -144,6 +156,21 @@ void steering_stop(void)
     if (!s_initialized) return;
     rmt_pulse_gen_stop(s_pulse_gen, STEERING_DECELERATION_PPS2);
     s_state = STEERING_IDLE;
+}
+
+void steering_enable(void)
+{
+    if (!s_initialized) return;
+    gpio_set_level(GPIO_STEP_ENABLE, 1);
+    ESP_LOGI(TAG, "Steering ENABLE (GPIO%d HIGH)", GPIO_STEP_ENABLE);
+}
+
+void steering_disable(void)
+{
+    if (!s_initialized) return;
+    steering_stop();
+    gpio_set_level(GPIO_STEP_ENABLE, 0);
+    ESP_LOGI(TAG, "Steering DISABLE (GPIO%d LOW)", GPIO_STEP_ENABLE);
 }
 
 float steering_get_angle_deg(void)
