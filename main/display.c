@@ -28,55 +28,49 @@ static uint8_t s_fb[OLED_PAGES][OLED_WIDTH];
 static bool s_initialized = false;
 static int64_t s_last_activity_us = 0;
 
-static const uint8_t s_init_cmds[] = {
-    SH1106_DISPLAYOFF,
-    0x00, 0x10,             /* Column address = 0 */
-    SH1106_SETSTARTLINE | 0, /* Start line 0 */
-    0xB0,                   /* Page address 0 */
-    0x81, 0xCF,             /* Contrast 207 */
-    0xA1,                   /* Segment remap (left-right flipped) */
-    0xA6,                   /* Normal (non-inverted) */
-    0xA8, 0x3F,             /* Multiplex ratio 64 */
-    0xD3, 0x00,             /* Display offset 0 */
-    0xD5, 0x80,             /* Oscillator freq */
-    0xD9, 0xF1,             /* Pre-charge period */
-    0xDA, 0x12,             /* COM pins hardware config */
-    0xDB, 0x40,             /* VCOM deselect level */
-    SH1106_DISPLAYALLON_RESUME,
-    SH1106_INVERTDISPLAY,   /* Reverse for white-on-dark */
-    SH1106_DISPLAYON,
-};
+#define CMD_BUF_SZ  32
 
+/*
+ * SH1106 I2C protocol: every transaction starts with a control byte.
+ *   0x00 = next bytes are commands  (D/C#=0)
+ *   0x40 = next bytes are data      (D/C#=1)
+ */
 static esp_err_t sh1106_write_cmd(const uint8_t *data, size_t len)
 {
-    return i2c_master_transmit(s_dev, data, len, -1);
+    uint8_t buf[CMD_BUF_SZ];
+    buf[0] = 0x00;
+    memcpy(buf + 1, data, len);
+    return i2c_master_transmit(s_dev, buf, len + 1, -1);
 }
 
 static esp_err_t sh1106_write_data(const uint8_t *data, size_t len)
 {
-    /* SH1106 data: prefix with 0x40 (Co=0, D/C#=1) */
-    uint8_t buf[129];  /* 1 prefix + max 128 data */
+    /* Max 128 bytes per SH1106 page — 1 prefix + 128 data = 129 */
+    uint8_t buf[129];
     buf[0] = 0x40;
     memcpy(buf + 1, data, len);
     return i2c_master_transmit(s_dev, buf, len + 1, -1);
 }
 
+/* Helper: send single-byte command */
+static esp_err_t sh1106_cmd1(uint8_t cmd)  { return sh1106_write_cmd(&cmd, 1); }
+/* Helper: send two-byte command-register pair */
+static esp_err_t sh1106_cmd2(uint8_t cmd, uint8_t val) {
+    uint8_t d[2] = {cmd, val}; return sh1106_write_cmd(d, 2);
+}
+
 static void sh1106_refresh(void)
 {
     for (int page = 0; page < OLED_PAGES; page++) {
-        uint8_t cmds[3] = {
-            SH1106_SETPAGEADDR | page,
-            SH1106_SETCOLADDR_LOW  | 0x02,   /* SH1106 has 2-pixel column offset */
-            SH1106_SETCOLADDR_HIGH | 0x00,
-        };
-        sh1106_write_cmd(cmds, 3);
+        sh1106_cmd1(SH1106_SETPAGEADDR | page);
+        sh1106_cmd1(0x02);           /* lower column = 2 (SH1106 2-pixel offset) */
+        sh1106_cmd1(0x10);           /* upper column = 0 */
         sh1106_write_data(s_fb[page], OLED_WIDTH);
     }
 }
 
 esp_err_t display_init(void)
 {
-    /* I2C bus config */
     i2c_master_bus_config_t bus_cfg = {
         .clk_source = I2C_CLK_SRC_DEFAULT,
         .glitch_ignore_cnt = 7,
@@ -87,7 +81,7 @@ esp_err_t display_init(void)
     };
     esp_err_t ret = i2c_new_master_bus(&bus_cfg, &s_i2c_bus);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2C bus init failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "I2C bus: %s", esp_err_to_name(ret));
         return ret;
     }
 
@@ -98,24 +92,37 @@ esp_err_t display_init(void)
     };
     ret = i2c_master_bus_add_device(s_i2c_bus, &dev_cfg, &s_dev);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2C device add failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "I2C device: %s", esp_err_to_name(ret));
         return ret;
     }
 
-    /* Send init sequence */
-    ret = sh1106_write_cmd(s_init_cmds, sizeof(s_init_cmds));
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "SH1106 init failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
+    /* ---- SH1106 init sequence (each command as separate I2C transaction) ---- */
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd1(SH1106_DISPLAYOFF));
+    /* Column address — value encoded in command byte itself (0x00-0x0F / 0x10-0x1F) */
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd1(0x00));     /* lower column = 0 */
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd1(0x10));     /* upper column = 0 */
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd1(SH1106_SETSTARTLINE | 0x00));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd1(SH1106_SETPAGEADDR | 0x00));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd2(SH1106_SETCONTRAST, 0xCF));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd1(0xA1));   /* segment remap */
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd1(0xC8));   /* COM scan reverse */
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd1(SH1106_NORMALDISPLAY));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd2(0xA8, 0x3F));   /* multiplex 64 */
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd2(0xD3, 0x00));   /* display offset 0 */
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd2(0xD5, 0x80));   /* oscillator */
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd2(0xD9, 0xF1));   /* pre-charge */
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd2(0xDA, 0x12));   /* COM pins */
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd2(0xDB, 0x40));   /* VCOM deselect */
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd1(SH1106_DISPLAYALLON_RESUME));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd1(SH1106_INVERTDISPLAY)); /* white-on-dark */
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sh1106_cmd1(SH1106_DISPLAYON));
 
-    /* Clear framebuffer */
     memset(s_fb, 0, sizeof(s_fb));
     sh1106_refresh();
 
     s_initialized = true;
     s_last_activity_us = esp_timer_get_time();
-    ESP_LOGI(TAG, "SH1106 OLED initialized: %dx%d, I2C 0x%02X",
+    ESP_LOGI(TAG, "SH1106 OLED ready: %dx%d I2C 0x%02X",
              OLED_WIDTH, OLED_HEIGHT, OLED_I2C_ADDR);
     return ESP_OK;
 }
@@ -187,25 +194,21 @@ static void draw_char(int x, int y, char c)
 {
     if (c < 32 || c > 127) c = '?';
     const uint8_t *glyph = font5x7[c - 32];
+    int page = y / 8;
+    int shift = y % 8;
     for (int col = 0; col < 5; col++) {
         if (x + col >= OLED_WIDTH) break;
         uint8_t bits = glyph[col];
-        if (y < 8) {
-            s_fb[y / 8][x + col] |= (bits << (y % 8));
-            if (y % 8 > 1) {
-                s_fb[y / 8 + 1][x + col] |= (bits >> (8 - y % 8));
-            }
+        s_fb[page][x + col] |= (bits << shift);
+        if (shift > 1 && page + 1 < OLED_PAGES) {
+            s_fb[page + 1][x + col] |= (bits >> (8 - shift));
         }
     }
 }
 
 static void draw_string(int x, int y, const char *str)
 {
-    while (*str) {
-        draw_char(x, y, *str);
-        x += 6;
-        str++;
-    }
+    while (*str) { draw_char(x, y, *str); x += 6; str++; }
 }
 
 static void draw_hline(int x, int y, int len)
@@ -219,15 +222,10 @@ static void draw_hline(int x, int y, int len)
 static void draw_bar(int x, int y, int width, int height, uint8_t pct)
 {
     int fill = (width * pct) / 100;
-    for (int row = 0; row < height; row++) {
-        draw_hline(x, y + row, width);
-    }
-    /* Clear right portion */
+    for (int row = 0; row < height; row++) draw_hline(x, y + row, width);
     for (int row = 0; row < height; row++) {
         for (int col = fill; col < width; col++) {
-            if (x + col < OLED_WIDTH) {
-                s_fb[y / 8 + row][x + col] &= ~(1 << (y % 8));
-            }
+            if (x + col < OLED_WIDTH) s_fb[y / 8 + row][x + col] &= ~(1 << (y % 8));
         }
     }
 }
@@ -236,105 +234,77 @@ void display_update(const display_state_t *state)
 {
     if (!s_initialized || !state) return;
 
-    /* Check sleep timeout */
     int64_t now = esp_timer_get_time();
     if (now - s_last_activity_us > OLED_TIMEOUT_MS * 1000) {
-        sh1106_write_cmd((uint8_t[]){SH1106_DISPLAYOFF}, 1);
+        sh1106_cmd1(SH1106_DISPLAYOFF);
         return;
     }
-    sh1106_write_cmd((uint8_t[]){SH1106_DISPLAYON}, 1);
+    sh1106_cmd1(SH1106_DISPLAYON);
 
     memset(s_fb, 0, sizeof(s_fb));
 
-    /* Row 0: Status bar */
     char line[32];
 
-    if (state->estop_active) {
-        snprintf(line, sizeof(line), "E-STOP!");
-        draw_string(0, 0, line);
-    } else if (state->failsafe_active) {
-        snprintf(line, sizeof(line), "FAILSAFE");
-        draw_string(0, 0, line);
-    } else if (state->rc_signal_ok) {
-        uint16_t steer = state->rc_steer_us;
-        const char *dir;
-        if (steer < 1460) dir = "  <<";
-        else if (steer > 1540) dir = ">>";
-        else dir = " --";
-        snprintf(line, sizeof(line), "%s %u%% %s",
-                 state->engine_running ? "RUN" : "STOP",
-                 state->throttle_pct, dir);
-        draw_string(0, 0, line);
-    } else {
-        draw_string(0, 0, "NO SIG");
-    }
+#define BAR_X       10
+#define BAR_W       100
+#define BAR_H       6
+#define VAL_X       (BAR_X + BAR_W + 4)
+#define ROW_S       3
+#define ROW_T       15
+#define ROW_B       27
+#define ROW_BOT     45
 
-    /* Separator */
-    draw_hline(0, 9, OLED_WIDTH);
-
-    /* Row 10-20: RC channel bars */
-    draw_string(0, 11, "S");  /* Steering */
+    /* Steering bar */
+    draw_string(0, ROW_S, "S");
     uint8_t steer_pct = (state->rc_steer_us > RC_CENTER_US) ?
         50 + (state->rc_steer_us - RC_CENTER_US) * 50 / (RC_MAX_VALID_US - RC_CENTER_US) :
         50 - (RC_CENTER_US - state->rc_steer_us) * 50 / (RC_CENTER_US - RC_MIN_VALID_US);
     if (steer_pct > 100) steer_pct = 100;
-    draw_bar(10, 11, 30, 3, steer_pct);
+    draw_bar(BAR_X, ROW_S, BAR_W, BAR_H, steer_pct);
     snprintf(line, sizeof(line), "%.0f'", state->steering_angle_deg);
-    draw_string(44, 11, line);
+    draw_string(VAL_X, ROW_S, line);
 
-    draw_string(0, 16, "T");  /* Throttle */
-    draw_bar(10, 16, 30, 3, state->throttle_pct);
-    snprintf(line, sizeof(line), "%u%%", state->throttle_pct);
-    draw_string(44, 16, line);
-
-    draw_string(0, 21, "B");  /* Brake */
-    draw_bar(10, 21, 30, 3, state->brake_pct);
-    snprintf(line, sizeof(line), "%u%%", state->brake_pct);
-    draw_string(44, 21, line);
-
-    /* Separator */
-    draw_hline(0, 26, OLED_WIDTH);
-
-    /* Row 28+: Engine info */
-#if CFG_ENABLE_RPM
-    snprintf(line, sizeof(line), "RPM: %u", state->rpm);
-    draw_string(0, 28, line);
-#else
-    draw_string(0, 28, "Engine:");
-    draw_string(48, 28, state->engine_state_str);
-#endif
-
-    /* Row 36+: Steering angle graphical bar */
-    draw_string(0, 37, "ST:");
-    int bar_center = 60;
-    int bar_width = 60;
-    int bar_half = bar_width / 2;
-    draw_hline(bar_center - bar_half, 38, bar_width);
-    /* Tick mark at center */
-    s_fb[38 / 8][bar_center] ^= (1 << (38 % 8));
-    s_fb[38 / 8][bar_center] ^= (1 << (38 % 8));
-
-    /* Steering position indicator */
-    float angle_ratio = state->steering_angle_deg / STEERING_MAX_ANGLE_DEG;
-    if (angle_ratio > 1.0f) angle_ratio = 1.0f;
-    if (angle_ratio < -1.0f) angle_ratio = -1.0f;
-    int pos_x = bar_center + (int)(angle_ratio * bar_half);
-    /* Draw a small arrow/cursor */
-    for (int dy = -1; dy <= 1; dy++) {
-        if (pos_x >= 0 && pos_x < OLED_WIDTH) {
-            s_fb[(38 + dy) / 8][pos_x] |= (1 << ((38 + dy) % 8));
-        }
+    /* Throttle bar */
+    draw_string(0, ROW_T, "T");
+    if (state->throttle_pct > 0) {
+        draw_bar(BAR_X, ROW_T, BAR_W, BAR_H, state->throttle_pct);
+    } else {
+        /* Empty outline */
+        for (int r = 0; r < BAR_H; r++) draw_hline(BAR_X, ROW_T + r, BAR_W);
     }
+    snprintf(line, sizeof(line), "%u%%", state->throttle_pct);
+    draw_string(VAL_X, ROW_T, line);
 
-    /* Bottom line: connection status */
-    draw_hline(0, 47, OLED_WIDTH);
-    snprintf(line, sizeof(line), "%s  %s",
-             state->rc_signal_ok ? "RC:OK" : "RC:--",
-             state->engine_state_str);
-    draw_string(0, 49, line);
+    /* Brake bar (fill from right side = pct% of bar) */
+    draw_string(0, ROW_B, "B");
+    if (state->brake_pct > 0) {
+        int fill = (BAR_W * state->brake_pct) / 100;
+        for (int r = 0; r < BAR_H; r++) {
+            for (int c = BAR_X; c < BAR_X + fill; c++) {
+                if (c < OLED_WIDTH) s_fb[(ROW_B + r) / 8][c] |= (1 << ((ROW_B + r) % 8));
+            }
+        }
+        /* Outline full width */
+        for (int r = 0; r < BAR_H; r++) draw_hline(BAR_X, ROW_B + r, BAR_W);
+    } else {
+        for (int r = 0; r < BAR_H; r++) draw_hline(BAR_X, ROW_B + r, BAR_W);
+    }
+    snprintf(line, sizeof(line), "%u%%", state->brake_pct);
+    draw_string(VAL_X, ROW_B, line);
 
-    /* Firmware version */
-    draw_string(100, 55, FIRMWARE_VERSION);
+    /* Bottom status line */
+    if (state->estop_active) {
+        draw_string(0, ROW_BOT, "E-STOP!");
+    } else if (state->failsafe_active) {
+        draw_string(0, ROW_BOT, "FAILSAFE");
+    } else {
+        snprintf(line, sizeof(line), "%s  %s",
+                 state->rc_signal_ok ? "RC:OK" : "RC:--",
+                 state->engine_state_str);
+        draw_string(0, ROW_BOT, line);
+    }
+    snprintf(line, sizeof(line), FIRMWARE_VERSION);
+    draw_string(90, ROW_BOT + 8, line);
 
     sh1106_refresh();
 }
@@ -342,8 +312,7 @@ void display_update(const display_state_t *state)
 void display_set_power(bool on)
 {
     if (!s_initialized) return;
-    uint8_t cmd = on ? SH1106_DISPLAYON : SH1106_DISPLAYOFF;
-    sh1106_write_cmd(&cmd, 1);
+    sh1106_cmd1(on ? SH1106_DISPLAYON : SH1106_DISPLAYOFF);
 }
 
 void display_notify_activity(void)
@@ -356,7 +325,7 @@ void display_notify_activity(void)
 
 esp_err_t display_init(void)
 {
-    ESP_LOGI(TAG, "OLED display disabled (CFG_ENABLE_OLED=0)");
+    ESP_LOGI(TAG, "OLED disabled (CFG_ENABLE_OLED=0)");
     return ESP_OK;
 }
 

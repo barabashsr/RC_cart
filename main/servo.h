@@ -14,10 +14,10 @@ void servo_set_brake(uint16_t pulse_us);
 void servo_failsafe(void);
 void servo_disable(void);
 
-/**
- * @brief Get last known combined-stick pulse (for OLED display)
- */
+void servo_set_center_us(uint16_t center_us);
 uint16_t servo_get_combined_pulse_us(void);
+uint16_t servo_get_throttle_pct(void);
+uint16_t servo_get_brake_pct(void);
 
 #ifdef __cplusplus
 }

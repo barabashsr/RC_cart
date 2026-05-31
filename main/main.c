@@ -33,13 +33,6 @@ static const char *TAG = "main";
 static bool s_failsafe_active = false;
 static bool s_estop_was_active = false;
 
-static uint16_t map_to_percent(uint16_t pulse, uint16_t min_us, uint16_t max_us)
-{
-    if (pulse <= min_us) return 0;
-    if (pulse >= max_us) return 100;
-    return (uint16_t)((pulse - min_us) * 100UL / (max_us - min_us));
-}
-
 /* ---- Control Task (Core 0, 5ms) ---- */
 static void control_task(void *arg)
 {
@@ -73,27 +66,13 @@ static void control_task(void *arg)
         engine_update();
 
         /* LED status */
-        static int debug_tick = 0;
         static int led_toggle = 0;
         led_toggle = (led_toggle + 1) % 50;
-        debug_tick++;
 
         gpio_set_level(GPIO_LED_STATUS,
             (!signal_ok && (led_toggle < 25)) ||
             (signal_ok && engine_get_state() == ENGINE_RUNNING)
                 ? LED_ACTIVE_LEVEL : !LED_ACTIVE_LEVEL);
-
-        /* Periodic debug dump (every ~1s = 200 cycles × 5ms) */
-        if (debug_tick >= 200) {
-            debug_tick = 0;
-            uint16_t ch1, ch3, ch6;
-            bool ok1 = rc_input_get_pulse(RC_IDX_STEERING, &ch1);
-            bool ok3 = rc_input_get_pulse(RC_IDX_THROTTLE_BRAKE, &ch3);
-            bool ok6 = rc_input_get_pulse(RC_IDX_STARTER, &ch6);
-            ESP_LOGI(TAG, "RC Ch1=%u Ch3=%u Ch6=%u | signal=%s engine=%d",
-                     ok1 ? ch1 : 0, ok3 ? ch3 : 0, ok6 ? ch6 : 0,
-                     signal_ok ? "OK" : "LOST", engine_get_state());
-        }
     }
 }
 
@@ -148,23 +127,11 @@ static void display_task(void *arg)
         memset(&ds, 0, sizeof(ds));
 
         rc_input_get_pulse(RC_IDX_STEERING, &ds.rc_steer_us);
-        ds.rc_throttle_brake_us = servo_get_combined_pulse_us();
         ds.rc_signal_ok = rc_input_is_signal_ok();
 
         ds.steering_angle_deg = steering_get_angle_deg();
-
-        /* Compute throttle/brake pct from combined stick value */
-        uint16_t tb = ds.rc_throttle_brake_us;
-        if (tb > RC_CENTER_US + RC_DEADBAND_STICK_US) {
-            ds.throttle_pct = map_to_percent(tb, RC_CENTER_US, RC_MAX_VALID_US);
-            ds.brake_pct = 0;
-        } else if (tb < RC_CENTER_US - RC_DEADBAND_STICK_US) {
-            ds.throttle_pct = 0;
-            ds.brake_pct = map_to_percent(tb, RC_MIN_VALID_US, RC_CENTER_US);
-        } else {
-            ds.throttle_pct = 0;
-            ds.brake_pct = 0;
-        }
+        ds.throttle_pct = servo_get_throttle_pct();
+        ds.brake_pct = servo_get_brake_pct();
 
         ds.rpm = engine_get_rpm();
         ds.engine_running = (engine_get_state() == ENGINE_RUNNING);
@@ -184,7 +151,7 @@ static void display_task(void *arg)
         display_update(&ds);
 
         if (ds.rc_steer_us > RC_CENTER_US + 100 || ds.rc_steer_us < RC_CENTER_US - 100 ||
-            ds.rc_throttle_brake_us > RC_CENTER_US + 100 || ds.rc_throttle_brake_us < RC_CENTER_US - 100) {
+            ds.throttle_pct > 5 || ds.brake_pct > 5) {
             display_notify_activity();
         }
     }
@@ -217,6 +184,7 @@ void app_main(void)
     if (rc_input_calibrate_center(&center_us) == ESP_OK) {
         ESP_LOGI(TAG, "Steering center: %u us", center_us);
         steering_set_center_us(center_us);
+        servo_set_center_us(center_us);
     } else {
         ESP_LOGW(TAG, "Calibration failed — default %u us", center_us);
     }

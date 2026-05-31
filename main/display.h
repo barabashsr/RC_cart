@@ -11,7 +11,6 @@ extern "C" {
 
 typedef struct {
     uint16_t rc_steer_us;
-    uint16_t rc_throttle_brake_us;
     bool rc_signal_ok;
 
     float steering_angle_deg;
