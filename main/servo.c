@@ -3,6 +3,7 @@
 #include "driver/mcpwm_prelude.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include <stdlib.h>
 
 static const char *TAG = "servo";
@@ -34,6 +35,7 @@ static uint16_t s_target_brake_us, s_current_brake_us;
 
 static uint16_t s_throttle_pct = 0;
 static uint16_t s_brake_pct = 0;
+static bool s_failsafe_active = false;
 
 static void apply_pulse(mcpwm_cmpr_handle_t cmpr, uint16_t pulse_us)
 {
@@ -49,10 +51,9 @@ static uint16_t map_pct(uint16_t value, uint16_t min_us, uint16_t max_us)
     return (uint16_t)((value - min_us) * 100UL / (max_us - min_us));
 }
 
-static uint16_t ramp_toward(uint16_t curr, uint16_t target)
+static uint16_t ramp_toward(uint16_t curr, uint16_t target, int32_t step)
 {
     int32_t diff = (int32_t)target - (int32_t)curr;
-    int32_t step = (int32_t)SERVO_RAMP_STEP;
     if (diff > step)       return (uint16_t)((int32_t)curr + step);
     else if (diff < -step) return (uint16_t)((int32_t)curr - step);
     else                   return target;
@@ -78,6 +79,11 @@ static void throttle_brake_callback(uint16_t pulse_us, void *user_data)
         s_zone = ZONE_BRAKE;
     } else if (abs(offset) < SERVO_HYST_EXIT_US) {
         s_zone = ZONE_IDLE;
+    }
+
+    /* First active stick input after failsafe recovery — resume normal ramp speed */
+    if (s_failsafe_active && (s_zone == ZONE_THROTTLE || s_zone == ZONE_BRAKE)) {
+        s_failsafe_active = false;
     }
 
     switch (s_zone) {
@@ -231,13 +237,11 @@ void servo_set_brake(uint16_t pulse_us)
 
 void servo_failsafe(void)
 {
-    /* Atomically reset ALL state — target, current, zone — to safe positions */
-    s_target_throttle_us = s_current_throttle_us = FAILSAFE_THROTTLE_US;
-    s_target_brake_us    = s_current_brake_us    = FAILSAFE_BRAKE_US;
+    s_target_throttle_us = FAILSAFE_THROTTLE_US;
+    s_target_brake_us    = FAILSAFE_BRAKE_US;
     s_zone = ZONE_IDLE;
-    apply_pulse(s_cmpr_throttle, s_current_throttle_us);
-    apply_pulse(s_cmpr_brake, s_current_brake_us);
-    ESP_LOGW(TAG, "Failsafe: throttle=%u brake=%u",
+    s_failsafe_active = true;
+    ESP_LOGW(TAG, "Failsafe: throttle=%u brake=%u (ramping)",
              (unsigned int)FAILSAFE_THROTTLE_US, (unsigned int)FAILSAFE_BRAKE_US);
 }
 
@@ -256,16 +260,21 @@ void servo_update(void)
     int32_t tdiff = (int32_t)s_target_throttle_us - (int32_t)s_current_throttle_us;
     int32_t bdiff = (int32_t)s_target_brake_us    - (int32_t)s_current_brake_us;
 
-    s_current_throttle_us = ramp_toward(s_current_throttle_us, s_target_throttle_us);
-    s_current_brake_us    = ramp_toward(s_current_brake_us,    s_target_brake_us);
+    int32_t step = s_failsafe_active ? SERVO_FAILSAFE_STEP : SERVO_RAMP_STEP;
+    s_current_throttle_us = ramp_toward(s_current_throttle_us, s_target_throttle_us, step);
+    s_current_brake_us    = ramp_toward(s_current_brake_us,    s_target_brake_us,    step);
 
     apply_pulse(s_cmpr_throttle, s_current_throttle_us);
     apply_pulse(s_cmpr_brake, s_current_brake_us);
 
-    if (abs(tdiff) > 50 || abs(bdiff) > 50) {
-        ESP_LOGW(TAG, "!RAMP! T:%u->%u(%+" PRId32 ") B:%u->%u(%+" PRId32 ") z:%d",
+    /* Log large deltas at most once per 500ms to avoid flooding */
+    static int64_t s_last_ramp_log_us = 0;
+    int64_t now = esp_timer_get_time();
+    if ((abs(tdiff) > 100 || abs(bdiff) > 100) && (now - s_last_ramp_log_us) > 500000) {
+        s_last_ramp_log_us = now;
+        ESP_LOGW(TAG, "!RAMP! T:%u->%u(%+" PRId32 ") B:%u->%u(%+" PRId32 ") z:%d fs:%d",
                  s_current_throttle_us, s_target_throttle_us, tdiff,
-                 s_current_brake_us, s_target_brake_us, bdiff, s_zone);
+                 s_current_brake_us, s_target_brake_us, bdiff, s_zone, s_failsafe_active);
     }
 }
 

@@ -168,9 +168,13 @@ extern "C" {
 #define CALIBRATE_AXIS_DURATION_MS   3000    /* Sample each axis for 3 seconds */
 #define CALIBRATE_NVS_NAMESPACE      "rc_calib"
 
-/* Servo ramp: limits rate of change to prevent jerks and power spikes */
-#define SERVO_RAMP_US_PER_SEC        3000    /* 3000 us/s — full brake release in ~200ms */
-#define SERVO_RAMP_STEP              ((SERVO_RAMP_US_PER_SEC) * TASK_PERIOD_CONTROL_MS / 1000)  /* 15 us/tick */
+/* Servo ramp: limits rate of change to prevent jerks and power spikes.
+ * Normal ramp is slow (1000 us/s) for smooth stick movements.
+ * Failsafe ramp is faster (3000 us/s) for safety-critical brake engagement. */
+#define SERVO_RAMP_US_PER_SEC            1000
+#define SERVO_RAMP_STEP                  ((SERVO_RAMP_US_PER_SEC) * TASK_PERIOD_CONTROL_MS / 1000)       /* 5 us/tick */
+#define SERVO_FAILSAFE_RAMP_US_PER_SEC   3000
+#define SERVO_FAILSAFE_STEP              ((SERVO_FAILSAFE_RAMP_US_PER_SEC) * TASK_PERIOD_CONTROL_MS / 1000)  /* 15 us/tick */
 
 /*===========================================================================
  * 5. STEERING MOTOR CONFIGURATION (StepperOnline Step/Dir)

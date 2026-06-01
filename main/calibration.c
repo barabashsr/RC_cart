@@ -146,7 +146,10 @@ esp_err_t calibration_run(calibration_result_t *result)
 
         display_show_calibration("CALIBRATION", "SAVING...", 20, 0);
         vTaskDelay(pdMS_TO_TICKS(500));
-        nvs_save(result);
+        esp_err_t err = nvs_save(result);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "NVS save failed: %s", esp_err_to_name(err));
+        }
     } else if (nvs_load(result)) {
         result->from_nvs = true;
     } else {
