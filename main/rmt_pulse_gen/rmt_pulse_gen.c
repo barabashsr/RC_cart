@@ -53,6 +53,7 @@ static const char* TAG = "rmt_pulse_gen";
 #define MIN_QUEUE_CMDS          16          /* Minimum commands before ticks limit */
 #define DIR_SETUP_US            5           /* Direction setup time in microseconds */
 #define RMT_MIN_CMD_TICKS       3200        /* Min ticks per cmd (5000 Hz, keeps duration < 32767) */
+#define RMT_HALF_TICK_MIN       40          /* 2.5 µs min pulse width at 16 MHz (stepper driver req) */
 
 /* Command flags */
 #define CMD_FLAG_LAST           0x01
@@ -1182,6 +1183,7 @@ static size_t IRAM_ATTR fill_symbols(rmt_pulse_gen_t* gen, rmt_symbol_word_t* sy
     if (ticks_per_symbol > RMT_MAX_SYMBOL_TICKS) ticks_per_symbol = RMT_MAX_SYMBOL_TICKS;
     uint16_t half_ticks = (ticks_per_symbol >> 1);
     if (half_ticks < 1) half_ticks = 1;
+    if (half_ticks < RMT_HALF_TICK_MIN) half_ticks = RMT_HALF_TICK_MIN;  /* 2.5 µs min */
 
     /* Fill symbols */
     uint8_t sym_idx = 0;

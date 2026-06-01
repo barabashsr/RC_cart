@@ -97,6 +97,9 @@ static void control_task(void *arg)
         /* Fire all RC channel subscriptions */
         rc_input_process_callbacks();
 
+        /* Ramp servo PWM toward target */
+        servo_update();
+
         /* Check signal and handle failsafe */
         bool signal_ok = rc_input_is_signal_ok();
         if (!signal_ok) {

@@ -23,6 +23,7 @@ void steering_update(uint16_t rc_pulse_us);
 void steering_stop(void);
 void steering_enable(void);
 void steering_disable(void);
+void steering_center(void);
 float steering_get_angle_deg(void);
 steering_state_t steering_get_state(void);
 bool steering_at_limit(void);

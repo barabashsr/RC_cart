@@ -84,8 +84,10 @@ esp_err_t steering_init(void)
     };
     rc_input_subscribe(&sub);
 
-    ESP_LOGI(TAG, "Steering ready: %d pulses/deg, max ±%d deg, ch%d",
-             (int)STEERING_PULSES_PER_DEGREE, STEERING_MAX_ANGLE_DEG, RC_IDX_STEERING + 1);
+    ESP_LOGI(TAG, "Steering ready: %d pulses/deg (0.1°), max ±%d deg, ch%d, %s",
+             (int)STEERING_PULSES_PER_DEGREE, STEERING_MAX_ANGLE_DEG,
+             RC_IDX_STEERING + 1,
+             CFG_ENABLE_STEERING_FEEDBACK ? "closed-loop" : "open-loop");
     return ESP_OK;
 }
 
@@ -99,56 +101,74 @@ void steering_update(uint16_t rc_pulse_us)
 {
     if (!s_initialized) return;
 
+    /* Read actual position from PCNT (closed-loop) */
+    int32_t actual_pulses;
+#if CFG_ENABLE_STEERING_FEEDBACK
+    actual_pulses = (int32_t)pcnt_tracker_get_position(s_tracker);
+#else
+    actual_pulses = s_current_pulses;
+#endif
+
     int left_triggered = (gpio_get_level(GPIO_LIMIT_LEFT) == STEERING_LIMIT_ACTIVE_LEVEL);
     int right_triggered = (gpio_get_level(GPIO_LIMIT_RIGHT) == STEERING_LIMIT_ACTIVE_LEVEL);
 
+    /* Convert RC pulse to target angle (0 = center) */
     float target_angle;
     if (rc_pulse_us < s_center_us - RC_DEADBAND_STICK_US) {
         float ratio = (float)(s_center_us - rc_pulse_us) /
                       (float)(s_center_us - RC_MIN_VALID_US);
         target_angle = -ratio * STEERING_MAX_ANGLE_DEG;
-        if (left_triggered) target_angle = s_current_angle;
         s_state = STEERING_MOVING;
     } else if (rc_pulse_us > s_center_us + RC_DEADBAND_STICK_US) {
         float ratio = (float)(rc_pulse_us - s_center_us) /
                       (float)(RC_MAX_VALID_US - s_center_us);
         target_angle = ratio * STEERING_MAX_ANGLE_DEG;
-        if (right_triggered) target_angle = s_current_angle;
         s_state = STEERING_MOVING;
     } else {
-        target_angle = s_current_angle;
+        target_angle = 0.0f;
         if (!rmt_pulse_gen_is_running(s_pulse_gen)) {
             s_state = STEERING_IDLE;
         }
     }
 
+    /* Clamp */
     if (target_angle > STEERING_MAX_ANGLE_DEG) target_angle = STEERING_MAX_ANGLE_DEG;
     if (target_angle < -STEERING_MAX_ANGLE_DEG) target_angle = -STEERING_MAX_ANGLE_DEG;
 
-    if (left_triggered && target_angle < s_current_angle) {
-        target_angle = s_current_angle;
+    /* Enforce limit switches: block motion into triggered direction */
+    float actual_angle = (float)actual_pulses / STEERING_PULSES_PER_DEGREE;
+    if (left_triggered && target_angle < actual_angle) {
+        target_angle = actual_angle;
         s_state = STEERING_AT_LIMIT_LEFT;
     }
-    if (right_triggered && target_angle > s_current_angle) {
-        target_angle = s_current_angle;
+    if (right_triggered && target_angle > actual_angle) {
+        target_angle = actual_angle;
         s_state = STEERING_AT_LIMIT_RIGHT;
     }
 
     int32_t target_pulses = (int32_t)roundf(target_angle * STEERING_PULSES_PER_DEGREE);
-    int32_t delta_pulses = target_pulses - s_current_pulses;
+    int32_t error = target_pulses - actual_pulses;
 
-    if (abs(delta_pulses) < 5 && fabsf(target_angle - s_current_angle) < 0.1f) return;
+    /* Deadband */
+    if (abs(error) <= STEERING_POS_DEADBAND_PULSES) return;
 
-    float degrees_per_sec = STEERING_MAX_ANGLE_DEG * 2.0f / (float)STEERING_RAMP_TIME_MS * 1000.0f;
-    float max_vel_pps = degrees_per_sec * STEERING_PULSES_PER_DEGREE;
-    if (max_vel_pps > STEERING_MAX_SPEED_PPS) max_vel_pps = STEERING_MAX_SPEED_PPS;
-
-    if (delta_pulses != 0) {
-        s_current_pulses = target_pulses;
-        s_current_angle = (float)target_pulses / STEERING_PULSES_PER_DEGREE;
-        rmt_pulse_gen_start_move(s_pulse_gen, delta_pulses,
-                                 max_vel_pps, STEERING_ACCELERATION_PPS2);
+    /* Soft speed scaling — gentler on small corrections */
+    float angle_error = fabsf(target_angle - actual_angle);
+    float max_vel = STEERING_MAX_SPEED_PPS;
+    if (angle_error < 5.0f) {
+        max_vel = STEERING_MAX_SPEED_PPS * angle_error / 5.0f;
+        if (max_vel < 500.0f) max_vel = 500.0f;
     }
+
+    s_current_angle = target_angle;
+    s_current_pulses = target_pulses;
+    rmt_pulse_gen_start_move(s_pulse_gen, error, max_vel, STEERING_ACCELERATION_PPS2);
+}
+
+void steering_center(void)
+{
+    if (!s_initialized) return;
+    steering_update(s_center_us);
 }
 
 void steering_stop(void)

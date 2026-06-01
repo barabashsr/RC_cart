@@ -15,80 +15,61 @@ ESP32-S3 firmware for remote-controlling a gasoline cart/mini-buggy via standard
 
 ## Pinout (ESP32-S3-DevKit-C)
 
-### Left Header — Cart Connections
+Physical order, top-to-bottom on each header.
 
-| GPIO | Dir | Function | Details |
-|------|-----|----------|---------|
-| **4** | OUT | STEP | Steering motor step pulse (RMT TX) |
-| **5** | OUT | DIR | Steering motor direction |
-| **6** | OUT | ENA | Steering motor enable (HIGH=on) |
-| **7** | OUT | Servo T | Throttle servo (LEDC, 50Hz) |
-| **8** | IN | Lim L | Steering left limit switch (active LOW) |
-| **9** | IN | RC Ch1 | Steering stick |
-| **10** | IN | RC Ch2 | Spare |
-| **11** | IN | RC Ch3 | Throttle+Brake combined stick |
-| **12** | IN | RC Ch4 | Spare |
-| **13** | IN | RC Ch5 | Spare |
-| **14** | IN | RC Ch6 | Engine start/shutdown toggle |
-| **15** | OUT | Servo B | Brake servo (LEDC, 50Hz) |
-| **16** | IN | Lim R | Steering right limit switch (active LOW) |
-| **17** | OUT | Starter | Starter relay (active LOW, optocoupler) |
-| **18** | OUT | Ign Kill | Ignition kill relay (active LOW, optocoupler) |
-
-### Right Header — Board Peripherals
-
-| GPIO | Dir | Function | Details |
-|------|-----|----------|---------|
-| **1** | IN | E-Stop | Emergency stop (active LOW, pulled up) |
-| **2** | — | free | Spare / E-Stop fallback if RPM uses GPIO 1 |
-| **21** | — | free | Available |
-| **38** | I/O | I2C SDA | SH1106 OLED |
-| **39** | I/O | I2C SCL | SH1106 OLED |
-| **40** | IN | Enc Btn | Rotary encoder push button (SW) |
-| **41** | IN | Enc B | Rotary encoder phase B (DT) |
-| **42** | IN | Enc A | Rotary encoder phase A (CLK) |
-| **47** | OUT | Lights | Lights relay (active HIGH) |
-| **48** | OUT | RGB LED | Built-in WS2812 (addressable RGB) |
-
-### GPIO Groups by Purpose
+### Left Header (J1) — Cart Connections
 
 ```
-LEFT HEADER (cart wiring):
-  4-5-6      Steering step/dir/enable     (consecutive)
-  7          Throttle servo
-  15         Brake servo
-  8, 16      Limit switches               (cart-mounted)
-  17-18      Starter + ignition relays
-  9-14       RC receiver Ch1-Ch6          (consecutive)
-
-RIGHT HEADER (board peripherals):
-  1          E-Stop
-  38-39      I2C (SDA, SCL)              (adjacent)
-  40-41-42   Rotary encoder (Btn, B, A)   (consecutive)
-  47         Lights relay
-  48         RGB LED (built-in WS2812)
+Pin#  GPIO  Dir   Function
+─────────────────────────────
+ 1    3V3   —     (3.3V power rail)
+ 2    RST   —     (reset)
+ 3    4     OUT   STEP      Steering motor step pulse (RMT TX)
+ 4    5     OUT   DIR       Steering motor direction
+ 5    6     OUT   ENA       Steering motor enable (HIGH = on)
+ 6    7     OUT   Servo T   Throttle servo (LEDC, 50Hz)
+ 7    15    OUT   Servo B   Brake servo (LEDC, 50Hz)
+ 8    16    OUT   Ign Kill  Ignition kill relay (active LOW, optocoupler)
+ 9    17    OUT   Starter   Starter motor relay (active LOW, optocoupler)
+10    18    IN    Lim R     Steering right limit switch (active LOW)
+11    8     IN    Lim L     Steering left limit switch (active LOW)
+12    3     —     ⛔ STRAPPING — do not use (JTAG)
+13    46    —     ⛔ STRAPPING — do not use (boot log)
+14    9     IN    RC Ch1    Steering stick (rightmost, easy access)
+15    10    IN    RC Ch2    Spare
+16    11    IN    RC Ch3    Throttle+Brake combined stick
+17    12    IN    RC Ch4    Spare
+18    13    IN    RC Ch5    Spare
+19    14    IN    RC Ch6    Engine start/shutdown toggle
+20    5V    —     (5V power rail)
 ```
 
-### Free GPIOs
+### Right Header (J3) — Board Peripherals
 
-| GPIO | Notes |
-|------|-------|
-| **2** | Right header — spare / E-Stop fallback |
-| **21** | Right header |
-| **16** | Used for Lim R when RPM disabled; if RPM enabled, move Lim R |
-| **33-37** | May be PSRAM on some modules — check your variant |
-
-### Strapping / Restricted Pins (DO NOT USE)
-
-| GPIO | Reason |
-|------|--------|
-| **0** | Boot mode — LOW = download mode |
-| **3** | JTAG control |
-| **19** | USB D- — needed for flashing/monitor |
-| **20** | USB D+ — needed for flashing/monitor |
-| **45** | VDD_SPI voltage |
-| **46** | Boot log — LOW suppresses bootloader output |
-| **26-32** | Flash/PSRAM — depends on module variant |
+```
+Pin#  GPIO  Dir   Function
+─────────────────────────────
+ 1    5V    —     (5V power rail)
+ 2    GND   —     (ground)
+ 3    1     IN    E-Stop    Emergency stop (active LOW, pulled up)
+ 4    2     IN    RPM       RPM sensor input (PCNT, when CFG_ENABLE_RPM=1)
+ 5    42    IN    Enc A     Rotary encoder phase A (CLK)
+ 6    41    IN    Enc B     Rotary encoder phase B (DT)
+ 7    40    IN    Enc Btn   Rotary encoder push button (SW)
+ 8    39    I/O   I2C SDA   SH1106 OLED
+ 9    38    I/O   I2C SCL   SH1106 OLED
+10    37    —     ⛔ PSRAM   (octal PSRAM on WROOM-1)
+11    36    —     ⛔ PSRAM
+12    35    —     ⛔ PSRAM
+13    0     —     ⛔ STRAPPING — do not use (boot mode)
+14    GND   —     (ground)
+15    EN    —     (chip enable)
+16    48    OUT   RGB LED   Built-in WS2812 addressable LED
+17    47    OUT   Lights    Lights relay (active HIGH)
+18    21    —     free
+19    20    —     ⛔ USB D+   (programming/monitor)
+20    19    —     ⛔ USB D-   (programming/monitor)
+```
 
 ---
 
@@ -248,6 +229,56 @@ Legend:
 
 ---
 
+## Steering Mechanical Reduction
+
+| Stage | Ratio | Type |
+|-------|-------|------|
+| Timing belt | 20:72 (1:3.6) | Motor pulley : steering shaft pulley |
+| Planetary reducer | 1:15 | Gearbox on motor output |
+| **Total** | **1:54** | 54 motor revolutions per 1 steering shaft revolution |
+
+---
+
+## Servo Driver Configuration (DSY-RS Series)
+
+The driver's electronic gear handles the 54:1 mechanical reduction. Firmware outputs
+0.1° per step at the steering shaft (3600 pulses = 360° = 1 shaft revolution).
+
+### Driver Parameters
+
+| Parameter | Value | Meaning |
+|-----------|-------|---------|
+| **P00.00** | 1 | Position control mode |
+| **P04.00** | 0 | Pulse command source (pulse+direction) |
+| **P04.05** | 200 | Command pulses per motor revolution (numerator) |
+| **P04.07** | 3 | Electronic gear numerator |
+| **P04.09** | 1 | Electronic gear denominator |
+
+### Calculation
+
+```
+Motor revs = command_pulses × P04.07 / (P04.09 × P04.05)
+           = 3600 × 3 / (1 × 200)
+           = 10800 / 200
+           = 54 motor revs ← 1 shaft revolution  ✓
+
+Resolution = 360° / 3600 pulses = 0.1° per pulse
+```
+
+### Wiring
+
+```
+ESP32 GPIO 4 (STEP) → PULSE+ (pin 9 on DIDO port)
+ESP32 GPIO 5 (DIR)  → SIGH+  (pin 11 on DIDO port)
+ESP32 GPIO 6 (ENA)  → DI1    (pin 3 — see servo enable note)
+ESP32 GND            → PULSE- (pin 10), SIGH- (pin 12)
+```
+
+**Servo enable**: Either wire 24V to ICOM (pin 6) and DI1 (pin 3), or set the
+software parameter trick (P02.01=0, P02.00=0x0001, then re-power).
+
+---
+
 ## Configuration
 
 All settings are in a single file: **`main/cart_config.h`**
@@ -256,11 +287,11 @@ All settings are in a single file: **`main/cart_config.h`**
 
 | Parameter | Default | What to Change |
 |-----------|---------|----------------|
-| `STEERING_MICROSTEP` | 16 | Match DIP switches on your StepperOnline drive |
-| `STEERING_REDUCER_RATIO` | 5.0 | Your gear reducer ratio |
-| `STEERING_BELT_RATIO` | 2.0 | Timing belt pulley ratio |
-| `STEERING_MAX_ANGLE_DEG` | 35.0 | Max steering angle |
-| `STEERING_MAX_SPEED_PPS` | 200000 | Lower if motor skips steps |
+| `STEERING_MAX_ANGLE_DEG` | 35 | Max steering angle from center |
+| `STEERING_PULSES_PER_DEGREE` | 10 | 0.1° per step at shaft — match driver P04.05 if changing |
+| `STEERING_MAX_SPEED_PPS` | 10000 | Lower if motor skips steps |
+| `STEERING_ACCELERATION_PPS2` | 50000 | Lower if motor jerks on start |
+| `STEERING_POS_DEADBAND_PULSES` | 2 | Stop corrections within this many pulses of target |
 | `THROTTLE_IDLE_US` | 1000 | Servo idle pulse (carb fully closed) |
 | `THROTTLE_FULL_US` | 2000 | Servo full-open pulse |
 | `BRAKE_RELEASED_US` | 1000 | Brake off pulse |
@@ -271,9 +302,9 @@ All settings are in a single file: **`main/cart_config.h`**
 ### Compile-Time Feature Toggles
 
 ```c
-#define CFG_ENABLE_RPM              1   // 1 = RPM sensor, 0 = no sensor
+#define CFG_ENABLE_RPM              0   // 1 = RPM sensor, 0 = no sensor
 #define CFG_ENABLE_OLED             1   // 1 = SH1106 OLED, 0 = no display
-#define CFG_ENABLE_STEERING_FEEDBACK 0  // 1 = encoder feedback, 0 = open-loop
+#define CFG_ENABLE_STEERING_FEEDBACK 1  // 1 = PCNT closed-loop, 0 = open-loop
 ```
 
 ---
@@ -343,14 +374,16 @@ Typical values:
      │   Ramp Task (5ms ISR)  │── Step pulse generation (RMT TX)
      │                        │
       │  Outputs:              │
-      │   LEDC Ch0 → Throttle  │── 50Hz servo PWM (GPIO 7)
-      │   LEDC Ch1 → Brake     │── 50Hz servo PWM (GPIO 15)
-      │   RMT TX  → Steering   │── Step/Dir pulses (GPIO 4/5/6)
-      │   RMT TX  → RGB LED    │── WS2812 built-in LED (GPIO 48)
-      │   GPIO   → Starter relay, Ignition kill, Lights
+      │   LEDC → Throttle (GPIO 7)  │── 50Hz servo PWM
+      │   LEDC → Brake (GPIO 15)    │── 50Hz servo PWM
+      │   RMT  → Steering (4/5/6)   │── Step/Dir + PCNT loopback
+      │   RMT  → RGB LED (GPIO 48)  │── WS2812 built-in LED
+      │   GPIO → Relays, Lights     │
       │                        │
       │  Inputs:               │
-      │   GPIO   → RC Ch1-6 (9-14), E-Stop (1), Limit L/R (8,16)
+      │   GPIO → RC Ch1-6 (9-14)    │── 50Hz PWM edge ISR
+      │   PCNT → Step count (GPIO 4)│── Closed-loop position feedback
+      │   GPIO → E-Stop (1), Limits (8,18)
      └────────────────────────┘
 ```
 
@@ -359,9 +392,9 @@ Typical values:
 | Condition | Throttle | Brake | Steering | Engine | RGB LED |
 |-----------|----------|-------|----------|--------|---------|
 | RC signal OK | Normal | Normal | Normal | Normal | Green (running) / Blue (armed) |
-| RC signal lost | 1000us (idle) | 2000us (full) | Hold | Kill | Fast blink red |
+| RC signal lost | 1000us (idle) | 2000us (full) | Disabled | Kill | Fast blink red |
 | E-Stop pressed | Disabled | Disabled | Disabled | Kill | Solid red |
-| Boot (no signal) | Idle | Full brake | Center | Off | Dim blue |
+| Boot (no signal) | Idle | Full brake | Free | Off | Dim blue |
 
 ---
 

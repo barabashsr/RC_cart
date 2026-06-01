@@ -24,7 +24,7 @@ extern "C" {
 
 #define CFG_ENABLE_RPM                0       /* 1 = RPM sensor enabled, 0 = disabled */
 #define CFG_ENABLE_OLED               1       /* 1 = OLED display enabled, 0 = disabled */
-#define CFG_ENABLE_STEERING_FEEDBACK  0       /* 1 = position encoder on steering, 0 = open-loop step counting */
+#define CFG_ENABLE_STEERING_FEEDBACK  1       /* 1 = position encoder on steering, 0 = open-loop step counting */
 
 /*===========================================================================
  * 2. GPIO PIN ASSIGNMENTS
@@ -54,26 +54,22 @@ extern "C" {
 #define GPIO_RC_CH6                  14      /* Ch6: Engine start/shutdown toggle */
 
 /* Relay outputs */
+#define GPIO_IGNITION_KILL           16      /* Ignition kill relay (active LOW) */
 #define GPIO_STARTER_RELAY           17      /* Starter motor relay (active LOW) */
-#define GPIO_IGNITION_KILL           18      /* Ignition kill relay (active LOW) */
 
 /* Limit switches (cart-mounted, left header) */
 #define GPIO_LIMIT_LEFT              8       /* Steering left endstop (active LOW) */
-#define GPIO_LIMIT_RIGHT             16      /* Steering right endstop (active LOW) */
+#define GPIO_LIMIT_RIGHT             18      /* Steering right endstop (active LOW) */
 
 /* === Right header: Board peripherals === */
 
 /* RPM sensor */
 #if CFG_ENABLE_RPM
-#define GPIO_RPM_PULSE               1       /* RPM pulse input (PCNT, from comparator) */
+#define GPIO_RPM_PULSE               2       /* RPM pulse input (PCNT, from comparator) */
 #endif
 
 /* E-Stop */
 #define GPIO_ESTOP                   1       /* E-Stop (active LOW, pulled up) */
-#if CFG_ENABLE_RPM
-#undef GPIO_ESTOP
-#define GPIO_ESTOP                   2       /* E-Stop fallback when RPM uses GPIO 1 */
-#endif
 
 /* Rotary encoder (consecutive 40-42) */
 #define GPIO_ENC_A                   42      /* Encoder phase A (CLK) */
@@ -82,8 +78,8 @@ extern "C" {
 
 /* I2C OLED (consecutive 38-39) */
 #if CFG_ENABLE_OLED
-#define GPIO_I2C_SDA                 38
-#define GPIO_I2C_SCL                 39
+#define GPIO_I2C_SDA                 39
+#define GPIO_I2C_SCL                 38
 #endif
 
 /* Built-in WS2812 RGB LED */
@@ -144,33 +140,40 @@ extern "C" {
 #define BRAKE_RELEASED_US            1000    /* Pulse width when brake is released */
 #define BRAKE_FULL_US                2000    /* Pulse width when brake is fully engaged */
 
+/* Ramp: interpolate servo PWM toward target smoothly */
+#define SERVO_RAMP_US_PER_SEC        2000    /* Max rate of change */
+#define SERVO_RAMP_STEP_PER_TICK     ((SERVO_RAMP_US_PER_SEC) * TASK_PERIOD_CONTROL_MS / 1000)  /* 10 us */
+
+/* Hysteresis for throttle/brake zone switching (Schmitt trigger) */
+#define SERVO_HYST_ENTER_US          40      /* Must be this far from center to leave idle */
+#define SERVO_HYST_EXIT_US           20      /* Must be this close to center to return to idle */
+
+/* Minimum RC change to fire callback (filters electrical noise only) */
+#define RC_CALLBACK_NOISE_US         3       /* 3 us — below typical RC jitter */
+
 /*===========================================================================
  * 5. STEERING MOTOR CONFIGURATION (StepperOnline Step/Dir)
+ *
+ * 0.1° resolution at the steering shaft. Mechanical reduction (54:1 belt +
+ * planetary) is handled by the driver's P04.05 / P04.07 / P04.09 electronic
+ * gear — our firmware just outputs pulses at 0.1° per step.
  *===========================================================================*/
 
-/* Mechanical parameters */
-#define STEERING_MOTOR_STEPS_PER_REV 200     /* Motor steps per revolution (1.8 deg/step, half-step = 400, microstep varies) */
-#define STEERING_MICROSTEP           16      /* Microstepping divisor (set on drive DIP switches) */
-#define STEERING_PULSES_PER_REV      (STEERING_MOTOR_STEPS_PER_REV * STEERING_MICROSTEP)  /* = 3200 */
+#define STEERING_PULSES_PER_DEGREE    10      /* 10 pulses/deg = 0.1° per step at shaft */
 
-#define STEERING_REDUCER_RATIO       5.0f    /* Gear reducer ratio (motor revs : output revs) */
-#define STEERING_BELT_RATIO          2.0f    /* Timing belt ratio (motor pulley : steering shaft pulley) */
-#define STEERING_TOTAL_RATIO         ((float)(STEERING_REDUCER_RATIO * STEERING_BELT_RATIO))  /* Total reduction */
-#define STEERING_PULSES_PER_DEGREE   (STEERING_PULSES_PER_REV * STEERING_TOTAL_RATIO / 360.0f)  /* Pulses per degree of steering */
+#define STEERING_MAX_ANGLE_DEG        35      /* Maximum steering angle from center (± this many degrees) */
+#define STEERING_MAX_PULSES           (int32_t)(STEERING_MAX_ANGLE_DEG * STEERING_PULSES_PER_DEGREE)
 
-#define STEERING_MAX_ANGLE_DEG       35      /* Maximum steering angle from center (± this many degrees) */
-#define STEERING_CENTER_OFFSET_PULSES 0      /* Offset from mechanical center (tune for straight tracking) */
+/* Motion dynamics — scaled for 0.1° resolution (~700 pulses full range) */
+#define STEERING_MAX_SPEED_PPS        10000   /* 1000 deg/s = full range in 70 ms */
+#define STEERING_ACCELERATION_PPS2    50000   /* Reach top speed in 200 ms */
+#define STEERING_DECELERATION_PPS2    50000   /* Same as accel */
 
-/* Motion dynamics */
-#define STEERING_MAX_SPEED_PPS       200000  /* Maximum step rate (pulses/second) */
-#define STEERING_ACCELERATION_PPS2   500000  /* Acceleration (pulses/second^2) */
-#define STEERING_DECELERATION_PPS2   500000  /* Deceleration */
-
-/* Ramp time limit */
-#define STEERING_RAMP_TIME_MS        500     /* Target time for full-range steering move */
+/* Closed-loop position deadband (pulses) */
+#define STEERING_POS_DEADBAND_PULSES  2       /* Stop corrective moves within 0.2° of target */
 
 /* Endstop behavior */
-#define STEERING_LIMIT_ACTIVE_LEVEL  0       /* 0 = active LOW, pulled up internally */
+#define STEERING_LIMIT_ACTIVE_LEVEL   0       /* 0 = active LOW, pulled up internally */
 
 /*===========================================================================
  * 6. ENGINE CONFIGURATION (Starter + Ignition + RPM)
@@ -207,7 +210,7 @@ extern "C" {
 /* Failsafe: what happens on signal loss */
 #define FAILSAFE_THROTTLE_US         1000    /* Throttle -> idle */
 #define FAILSAFE_BRAKE_US            2000    /* Brake -> full */
-#define FAILSAFE_HOLD_STEERING       1       /* 1 = hold current position, 0 = return to center */
+#define FAILSAFE_RETURN_TO_CENTER    1       /* 1 = return to center on signal loss */
 
 /*===========================================================================
  * 8. OLED DISPLAY CONFIGURATION (SH1106 128x64, I2C)

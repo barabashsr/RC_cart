@@ -11,6 +11,7 @@ extern "C" {
 esp_err_t servo_init(void);
 void servo_set_throttle(uint16_t pulse_us);
 void servo_set_brake(uint16_t pulse_us);
+void servo_update(void);
 void servo_failsafe(void);
 void servo_disable(void);
 
