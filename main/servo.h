@@ -16,6 +16,7 @@ void servo_failsafe(void);
 void servo_disable(void);
 
 void servo_set_center_us(uint16_t center_us);
+void servo_set_ch3_calibration(uint16_t min_us, uint16_t center_us, uint16_t max_us);
 uint16_t servo_get_combined_pulse_us(void);
 uint16_t servo_get_throttle_pct(void);
 uint16_t servo_get_brake_pct(void);

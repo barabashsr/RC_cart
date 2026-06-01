@@ -321,6 +321,42 @@ void display_notify_activity(void)
     s_last_activity_us = esp_timer_get_time();
 }
 
+void display_show_calibration(const char *axis_label, const char *status,
+                               int bars_filled, int bars_empty)
+{
+    if (!s_initialized) return;
+    s_last_activity_us = esp_timer_get_time();
+    sh1106_cmd1(SH1106_DISPLAYON);
+
+    memset(s_fb, 0, sizeof(s_fb));
+
+    draw_string(0, 0, "CALIBRATION");
+    draw_string(0, 14, axis_label);
+    draw_string(0, 26, status);
+
+    int bar_y = 40;
+    int bar_x = 0;
+    int seg_w = (OLED_WIDTH - 4) / 20;
+
+    for (int i = 0; i < bars_filled; i++) {
+        for (int r = 0; r < 8; r++) {
+            for (int c = 0; c < seg_w - 2; c++) {
+                int px = bar_x + i * seg_w + c;
+                if (px < OLED_WIDTH) s_fb[(bar_y + r) / 8][px] |= (1 << ((bar_y + r) % 8));
+            }
+        }
+    }
+    for (int i = 0; i < 20; i++) {
+        for (int c = 0; c < seg_w - 2; c++) {
+            int px = bar_x + i * seg_w + c;
+            if (px < OLED_WIDTH) s_fb[bar_y / 8][px] |= (1 << (bar_y % 8));
+            if (px < OLED_WIDTH) s_fb[(bar_y + 7) / 8][px] |= (1 << ((bar_y + 7) % 8));
+        }
+    }
+
+    sh1106_refresh();
+}
+
 #else /* !CFG_ENABLE_OLED */
 
 esp_err_t display_init(void)
@@ -332,5 +368,6 @@ esp_err_t display_init(void)
 void display_update(const display_state_t *state) { (void)state; }
 void display_set_power(bool on) { (void)on; }
 void display_notify_activity(void) {}
+void display_show_calibration(const char *a, const char *s, int f, int e) { (void)a; (void)s; (void)f; (void)e; }
 
 #endif /* CFG_ENABLE_OLED */

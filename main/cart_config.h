@@ -164,6 +164,14 @@ extern "C" {
 /* Minimum RC change to fire callback (filters electrical noise only) */
 #define RC_CALLBACK_NOISE_US         3       /* 3 us — below typical RC jitter */
 
+/* Calibration */
+#define CALIBRATE_AXIS_DURATION_MS   3000    /* Sample each axis for 3 seconds */
+#define CALIBRATE_NVS_NAMESPACE      "rc_calib"
+
+/* Servo ramp: limits rate of change to prevent jerks and power spikes */
+#define SERVO_RAMP_US_PER_SEC        3000    /* 3000 us/s — full brake release in ~200ms */
+#define SERVO_RAMP_STEP              ((SERVO_RAMP_US_PER_SEC) * TASK_PERIOD_CONTROL_MS / 1000)  /* 15 us/tick */
+
 /*===========================================================================
  * 5. STEERING MOTOR CONFIGURATION (StepperOnline Step/Dir)
  *

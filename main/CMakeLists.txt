@@ -7,6 +7,7 @@ idf_component_register(
         engine.c
         safety.c
         display.c
+        calibration.c
         rmt_pulse_gen/rmt_pulse_gen.c
         rmt_pulse_gen/pcnt_tracker.c
     INCLUDE_DIRS

@@ -20,6 +20,11 @@ static bool s_initialized = false;
 static uint16_t s_center_us = RC_CENTER_US;
 static uint16_t s_combined_pulse_us = RC_CENTER_US;
 
+/* Calibrated Ch3 range — set by servo_set_ch3_calibration() */
+static uint16_t s_ch3_min_us = RC_MIN_VALID_US;
+static uint16_t s_ch3_max_us = RC_MAX_VALID_US;
+static uint16_t s_ch3_center_us = RC_CENTER_US;
+
 typedef enum { ZONE_IDLE, ZONE_THROTTLE, ZONE_BRAKE } zone_t;
 static zone_t s_zone = ZONE_IDLE;
 
@@ -42,6 +47,15 @@ static uint16_t map_pct(uint16_t value, uint16_t min_us, uint16_t max_us)
     if (value <= min_us) return 0;
     if (value >= max_us) return 100;
     return (uint16_t)((value - min_us) * 100UL / (max_us - min_us));
+}
+
+static uint16_t ramp_toward(uint16_t curr, uint16_t target)
+{
+    int32_t diff = (int32_t)target - (int32_t)curr;
+    int32_t step = (int32_t)SERVO_RAMP_STEP;
+    if (diff > step)       return (uint16_t)((int32_t)curr + step);
+    else if (diff < -step) return (uint16_t)((int32_t)curr - step);
+    else                   return target;
 }
 
 static void throttle_brake_callback(uint16_t pulse_us, void *user_data)
@@ -68,27 +82,27 @@ static void throttle_brake_callback(uint16_t pulse_us, void *user_data)
 
     switch (s_zone) {
     case ZONE_THROTTLE: {
-        uint16_t span_in  = RC_MAX_VALID_US - (s_center_us + SERVO_HYST_ENTER_US);
+        uint16_t span_in  = s_ch3_max_us - (s_ch3_center_us + SERVO_HYST_ENTER_US);
         uint16_t span_out = THROTTLE_FULL_US - THROTTLE_IDLE_US;
-        int32_t pos = (int32_t)pulse_us - (int32_t)(s_center_us + SERVO_HYST_ENTER_US);
+        int32_t pos = (int32_t)pulse_us - (int32_t)(s_ch3_center_us + SERVO_HYST_ENTER_US);
         if (pos < 0) pos = 0;
         if ((uint32_t)pos > span_in) pos = span_in;
         s_target_throttle_us = THROTTLE_IDLE_US + (uint32_t)pos * span_out / span_in;
         s_target_brake_us = BRAKE_RELEASED_US;
-        s_throttle_pct = map_pct(pulse_us, s_center_us, RC_MAX_VALID_US);
+        s_throttle_pct = map_pct(pulse_us, s_ch3_center_us, s_ch3_max_us);
         s_brake_pct = 0;
         break;
     }
     case ZONE_BRAKE: {
-        uint16_t span_in  = (s_center_us - SERVO_HYST_ENTER_US) - RC_MIN_VALID_US;
+        uint16_t span_in  = (s_ch3_center_us - SERVO_HYST_ENTER_US) - s_ch3_min_us;
         uint16_t span_out = BRAKE_FULL_US - BRAKE_RELEASED_US;
-        int32_t pos = (int32_t)(s_center_us - SERVO_HYST_ENTER_US) - (int32_t)pulse_us;
+        int32_t pos = (int32_t)(s_ch3_center_us - SERVO_HYST_ENTER_US) - (int32_t)pulse_us;
         if (pos < 0) pos = 0;
         if ((uint32_t)pos > span_in) pos = span_in;
         s_target_brake_us = BRAKE_RELEASED_US + (uint32_t)pos * span_out / span_in;
         s_target_throttle_us = THROTTLE_IDLE_US;
         s_throttle_pct = 0;
-        s_brake_pct = 100 - map_pct(pulse_us, RC_MIN_VALID_US, s_center_us);
+        s_brake_pct = 100 - map_pct(pulse_us, s_ch3_min_us, s_ch3_center_us);
         break;
     }
     default: /* ZONE_IDLE */
@@ -99,11 +113,18 @@ static void throttle_brake_callback(uint16_t pulse_us, void *user_data)
         break;
     }
 
+    /* Debug: every 50th callback */
     static int dbg = 0;
     if (++dbg >= 50) {
         dbg = 0;
-        ESP_LOGI(TAG, "Ch3=%u us zone=%d | T: %u→%u us (%u%%) B: %u→%u us (%u%%)",
+        ESP_LOGI(TAG, "Ch3=%u zone=%d | span_in=%u/%u | T:%u->%u (%u%%) B:%u->%u (%u%%)",
                  pulse_us, s_zone,
+                 (unsigned int)((s_zone == ZONE_THROTTLE)
+                     ? s_ch3_max_us - (s_ch3_center_us + SERVO_HYST_ENTER_US)
+                     : (s_ch3_center_us - SERVO_HYST_ENTER_US) - s_ch3_min_us),
+                 (unsigned int)((s_zone == ZONE_THROTTLE)
+                     ? THROTTLE_FULL_US - THROTTLE_IDLE_US
+                     : BRAKE_FULL_US - BRAKE_RELEASED_US),
                  s_current_throttle_us, s_target_throttle_us, s_throttle_pct,
                  s_current_brake_us, s_target_brake_us, s_brake_pct);
     }
@@ -155,9 +176,9 @@ esp_err_t servo_init(void)
     ESP_RETURN_ON_ERROR(mcpwm_generator_set_action_on_compare_event(s_gen_brake,
         MCPWM_GEN_COMPARE_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, s_cmpr_brake, MCPWM_GEN_ACTION_LOW)), TAG, "cmp_b");
 
-    /* 5. Init state to failsafe positions, start timer */
-    s_target_throttle_us = s_current_throttle_us = FAILSAFE_THROTTLE_US;
-    s_target_brake_us    = s_current_brake_us    = FAILSAFE_BRAKE_US;
+    /* 5. Init state to idle (released) — failsafe triggers on actual signal loss, not boot */
+    s_target_throttle_us = s_current_throttle_us = THROTTLE_IDLE_US;
+    s_target_brake_us    = s_current_brake_us    = BRAKE_RELEASED_US;
     s_zone = ZONE_IDLE;
 
     apply_pulse(s_cmpr_throttle, s_current_throttle_us);
@@ -183,6 +204,15 @@ void servo_set_center_us(uint16_t center_us)
 {
     s_center_us = center_us;
     ESP_LOGI(TAG, "Center set to %u us", center_us);
+}
+
+void servo_set_ch3_calibration(uint16_t min_us, uint16_t center_us, uint16_t max_us)
+{
+    s_ch3_min_us = min_us;
+    s_ch3_center_us = center_us;
+    s_ch3_max_us = max_us;
+    s_center_us = center_us;
+    ESP_LOGI(TAG, "Ch3 calibrated: %u-%u-%u us", min_us, center_us, max_us);
 }
 
 void servo_set_throttle(uint16_t pulse_us)
@@ -223,14 +253,20 @@ void servo_update(void)
 {
     if (!s_initialized) return;
 
-    /* EWMA: blend target into current (1/4 new + 3/4 old per tick = 68% in 4 ticks)
-     * update_cmp_on_tez ensures the new compare value is latched at timer zero,
-     * guaranteeing clean, glitch-free pulse edges. */
-    s_current_throttle_us = (s_current_throttle_us * 3 + s_target_throttle_us) >> 2;
-    s_current_brake_us    = (s_current_brake_us    * 3 + s_target_brake_us) >> 2;
+    int32_t tdiff = (int32_t)s_target_throttle_us - (int32_t)s_current_throttle_us;
+    int32_t bdiff = (int32_t)s_target_brake_us    - (int32_t)s_current_brake_us;
+
+    s_current_throttle_us = ramp_toward(s_current_throttle_us, s_target_throttle_us);
+    s_current_brake_us    = ramp_toward(s_current_brake_us,    s_target_brake_us);
 
     apply_pulse(s_cmpr_throttle, s_current_throttle_us);
     apply_pulse(s_cmpr_brake, s_current_brake_us);
+
+    if (abs(tdiff) > 50 || abs(bdiff) > 50) {
+        ESP_LOGW(TAG, "!RAMP! T:%u->%u(%+" PRId32 ") B:%u->%u(%+" PRId32 ") z:%d",
+                 s_current_throttle_us, s_target_throttle_us, tdiff,
+                 s_current_brake_us, s_target_brake_us, bdiff, s_zone);
+    }
 }
 
 uint16_t servo_get_combined_pulse_us(void) { return s_combined_pulse_us; }

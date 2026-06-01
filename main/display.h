@@ -31,6 +31,8 @@ esp_err_t display_init(void);
 void display_update(const display_state_t *state);
 void display_set_power(bool on);
 void display_notify_activity(void);
+void display_show_calibration(const char *axis_label, const char *status,
+                               int bars_filled, int bars_empty);
 
 #ifdef __cplusplus
 }

@@ -17,6 +17,8 @@ static float s_current_angle = 0.0f;
 static int32_t s_current_pulses = 0;
 static bool s_initialized = false;
 static uint16_t s_center_us = RC_CENTER_US;
+static uint16_t s_ch1_min_us = RC_MIN_VALID_US;
+static uint16_t s_ch1_max_us = RC_MAX_VALID_US;
 
 static void limit_sw_isr(void *arg);
 
@@ -97,6 +99,14 @@ void steering_set_center_us(uint16_t center_us)
     ESP_LOGI(TAG, "Center set to %u us", center_us);
 }
 
+void steering_set_range(uint16_t min_us, uint16_t center_us, uint16_t max_us)
+{
+    s_ch1_min_us = min_us;
+    s_center_us = center_us;
+    s_ch1_max_us = max_us;
+    ESP_LOGI(TAG, "Ch1 range: %u-%u-%u us", min_us, center_us, max_us);
+}
+
 void steering_update(uint16_t rc_pulse_us)
 {
     if (!s_initialized) return;
@@ -116,12 +126,12 @@ void steering_update(uint16_t rc_pulse_us)
     float target_angle;
     if (rc_pulse_us < s_center_us - RC_DEADBAND_STICK_US) {
         float ratio = (float)(s_center_us - rc_pulse_us) /
-                      (float)(s_center_us - RC_MIN_VALID_US);
+                      (float)(s_center_us - s_ch1_min_us);
         target_angle = -ratio * STEERING_MAX_ANGLE_DEG;
         s_state = STEERING_MOVING;
     } else if (rc_pulse_us > s_center_us + RC_DEADBAND_STICK_US) {
         float ratio = (float)(rc_pulse_us - s_center_us) /
-                      (float)(RC_MAX_VALID_US - s_center_us);
+                      (float)(s_ch1_max_us - s_center_us);
         target_angle = ratio * STEERING_MAX_ANGLE_DEG;
         s_state = STEERING_MOVING;
     } else {

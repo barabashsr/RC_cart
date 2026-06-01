@@ -16,6 +16,7 @@
 
 #include "cart_config.h"
 #include "rc_input.h"
+#include "calibration.h"
 #include "servo.h"
 #include "steering.h"
 #include "engine.h"
@@ -234,14 +235,22 @@ void app_main(void)
     ESP_LOGI(TAG, "Initializing RC input (6 channels)...");
     ESP_ERROR_CHECK(rc_input_init());
 
-    ESP_LOGI(TAG, "Calibrating steering center (set wheels straight)...");
-    uint16_t center_us = RC_CENTER_US;
-    if (rc_input_calibrate_center(&center_us) == ESP_OK) {
-        ESP_LOGI(TAG, "Steering center: %u us", center_us);
-        steering_set_center_us(center_us);
-        servo_set_center_us(center_us);
+    ESP_LOGI(TAG, "Initializing display...");
+    if (display_init() != ESP_OK) {
+        ESP_LOGW(TAG, "Display not found — continuing without OLED");
+    }
+
+    ESP_LOGI(TAG, "Running RC calibration (move all sticks to extremes)...");
+    calibration_result_t calib;
+    ESP_ERROR_CHECK(calibration_run(&calib));
+
+    steering_set_range(calib.ch1_min_us, calib.ch1_center_us, calib.ch1_max_us);
+    servo_set_ch3_calibration(calib.ch3_min_us, calib.ch3_center_us, calib.ch3_max_us);
+
+    if (!calib.from_nvs) {
+        ESP_LOGI(TAG, "Calibration applied from live measurement");
     } else {
-        ESP_LOGW(TAG, "Calibration failed — default %u us", center_us);
+        ESP_LOGI(TAG, "Calibration loaded from NVS");
     }
 
     ESP_LOGI(TAG, "Initializing servos...");
@@ -255,11 +264,6 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Initializing safety monitor...");
     ESP_ERROR_CHECK(safety_init());
-
-    ESP_LOGI(TAG, "Initializing display...");
-    if (display_init() != ESP_OK) {
-        ESP_LOGW(TAG, "Display not found — continuing without OLED");
-    }
 
     xTaskCreatePinnedToCore(control_task, "control", TASK_STACK_CONTROL,
                             NULL, TASK_PRIO_CONTROL, NULL, CORE_CONTROL);
