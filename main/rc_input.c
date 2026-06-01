@@ -230,7 +230,7 @@ void rc_input_process_callbacks(void)
         int32_t diff = (int32_t)current_us - (int32_t)last;
         if (diff < 0) diff = -diff;
 
-        if (last == 0 || diff >= RC_CALLBACK_NOISE_US) {
+        if (last == 0 || diff >= entry->sub.deadband_us) {
             entry->last_reported_us = current_us;
             entry->sub.callback(current_us, entry->sub.user_data);
         }

@@ -126,23 +126,36 @@ extern "C" {
  * 4. SERVO CONFIGURATION
  *===========================================================================*/
 
-#define SERVO_FREQUENCY_HZ           50      /* Standard RC servo PWM frequency */
-#define SERVO_PERIOD_US              20000   /* 20ms (1000000 / 50) */
-#define SERVO_MIN_PULSE_US           1000    /* Minimum pulse width (idle / full left) */
-#define SERVO_MAX_PULSE_US           2000    /* Maximum pulse width (full throttle / full right) */
-#define SERVO_CENTER_PULSE_US        1500    /* Center position */
+/* MCPWM timer: 1 MHz resolution = 1 us per tick, 20 ms period = 50 Hz */
+#define SERVO_TIMEBASE_RESOLUTION_HZ  1000000
+#define SERVO_TIMEBASE_PERIOD_TICKS   20000
 
-/* Throttle servo mapping */
-#define THROTTLE_IDLE_US             1000    /* Pulse width when throttle is closed */
-#define THROTTLE_FULL_US             2000    /* Pulse width at full throttle */
+/* Servo timing per manufacturer spec: 0°=0.5ms, 90°=1.5ms, 180°=2.5ms */
+#define SERVO_IDLE_PULSE_US          500     /* Pulse at 0° (0.5ms) */
+#define SERVO_SPAN_180DEG_US         2000    /* 2500-500 = 2000 us for full 180° */
+#define SERVO_ANGLE_TO_US(deg)  (SERVO_IDLE_PULSE_US + (uint32_t)(deg) * SERVO_SPAN_180DEG_US / 180)
 
-/* Brake servo mapping */
-#define BRAKE_RELEASED_US            1000    /* Pulse width when brake is released */
-#define BRAKE_FULL_US                2000    /* Pulse width when brake is fully engaged */
+/* Servo hardware limits */
+#define SERVO_HW_MIN_PULSE_US         500     /* 0° */
+#define SERVO_HW_MAX_PULSE_US         2500    /* 180° */
 
-/* Ramp: interpolate servo PWM toward target smoothly */
-#define SERVO_RAMP_US_PER_SEC        2000    /* Max rate of change */
-#define SERVO_RAMP_STEP_PER_TICK     ((SERVO_RAMP_US_PER_SEC) * TASK_PERIOD_CONTROL_MS / 1000)  /* 10 us */
+/* ----- Throttle servo (all in degrees, tune here) ----- */
+#define THROTTLE_IDLE_ANGLE_DEG       0       /* Carb closed */
+#define THROTTLE_FULL_ANGLE_DEG       45      /* WOT */
+#define THROTTLE_FAILSAFE_ANGLE_DEG   0       /* Idle on signal loss */
+
+/* ----- Brake servo (all in degrees, tune here) ----- */
+#define BRAKE_RELEASED_ANGLE_DEG      0       /* No braking */
+#define BRAKE_FULL_ANGLE_DEG          45      /* Full brake */
+#define BRAKE_FAILSAFE_ANGLE_DEG      BRAKE_FULL_ANGLE_DEG   /* Full brake on signal loss */
+
+/* ----- Derived pulse widths (internal) ----- */
+#define THROTTLE_IDLE_US              SERVO_ANGLE_TO_US(THROTTLE_IDLE_ANGLE_DEG)
+#define THROTTLE_FULL_US              SERVO_ANGLE_TO_US(THROTTLE_FULL_ANGLE_DEG)
+#define BRAKE_RELEASED_US             SERVO_ANGLE_TO_US(BRAKE_RELEASED_ANGLE_DEG)
+#define BRAKE_FULL_US                 SERVO_ANGLE_TO_US(BRAKE_FULL_ANGLE_DEG)
+#define FAILSAFE_THROTTLE_US          SERVO_ANGLE_TO_US(THROTTLE_FAILSAFE_ANGLE_DEG)
+#define FAILSAFE_BRAKE_US             SERVO_ANGLE_TO_US(BRAKE_FAILSAFE_ANGLE_DEG)
 
 /* Hysteresis for throttle/brake zone switching (Schmitt trigger) */
 #define SERVO_HYST_ENTER_US          40      /* Must be this far from center to leave idle */
@@ -208,8 +221,6 @@ extern "C" {
 #define SAFETY_ESTOP_DEBOUNCE_MS     20      /* E-stop button debounce */
 
 /* Failsafe: what happens on signal loss */
-#define FAILSAFE_THROTTLE_US         1000    /* Throttle -> idle */
-#define FAILSAFE_BRAKE_US            2000    /* Brake -> full */
 #define FAILSAFE_RETURN_TO_CENTER    1       /* 1 = return to center on signal loss */
 
 /*===========================================================================
@@ -278,8 +289,8 @@ extern "C" {
 
 _Static_assert(STEERING_MAX_ANGLE_DEG > 4 && STEERING_MAX_ANGLE_DEG < 91,
                "STEERING_MAX_ANGLE_DEG must be between 5 and 90");
-_Static_assert(SERVO_MIN_PULSE_US >= 500 && SERVO_MAX_PULSE_US <= 2500,
-               "Servo pulse range looks suspicious. Standard is 500-2500 us");
+_Static_assert(SERVO_HW_MIN_PULSE_US >= 50 && SERVO_HW_MAX_PULSE_US <= 2500,
+               "Servo pulse range looks suspicious. Standard is 50-2500 us");
 
 #ifdef __cplusplus
 }

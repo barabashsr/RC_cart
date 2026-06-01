@@ -287,17 +287,23 @@ All settings are in a single file: **`main/cart_config.h`**
 
 | Parameter | Default | What to Change |
 |-----------|---------|----------------|
+| `THROTTLE_IDLE_ANGLE_DEG` | 0 | Carb closed angle |
+| `THROTTLE_FULL_ANGLE_DEG` | 45 | WOT angle — increase if throttle doesn't open fully |
+| `BRAKE_RELEASED_ANGLE_DEG` | 0 | Brake off angle |
+| `BRAKE_FULL_ANGLE_DEG` | 45 | Full brake angle — increase for stronger braking |
+| `THROTTLE_FAILSAFE_ANGLE_DEG` | 0 | Idle on signal loss |
+| `BRAKE_FAILSAFE_ANGLE_DEG` | 180 | Full lock (hardware max) on signal loss |
+| `SERVO_IDLE_PULSE_US` | 1000 | Pulse at 0° — measure with scope where servo rests |
+| `SERVO_SPAN_180DEG_US` | 2400 | Full 180° span — measure 45° delta × 4 |
+| `SERVO_RAMP_US_PER_SEC` | 2000 | Ramp rate — lower for smoother/slower servos |
 | `STEERING_MAX_ANGLE_DEG` | 35 | Max steering angle from center |
-| `STEERING_PULSES_PER_DEGREE` | 10 | 0.1° per step at shaft — match driver P04.05 if changing |
 | `STEERING_MAX_SPEED_PPS` | 10000 | Lower if motor skips steps |
 | `STEERING_ACCELERATION_PPS2` | 50000 | Lower if motor jerks on start |
-| `STEERING_POS_DEADBAND_PULSES` | 2 | Stop corrections within this many pulses of target |
-| `THROTTLE_IDLE_US` | 1000 | Servo idle pulse (carb fully closed) |
-| `THROTTLE_FULL_US` | 2000 | Servo full-open pulse |
-| `BRAKE_RELEASED_US` | 1000 | Brake off pulse |
-| `BRAKE_FULL_US` | 2000 | Full brake pulse |
 | `STARTER_MAX_CRANK_MS` | 3000 | Maximum cranking time |
-| `RPM_RUNNING_THRESHOLD` | 300 | RPM above which engine is "running" |
+
+**Servo timing spec**: 0° = 50 us, 90° = 1500 us, 180° = 2500 us.
+All angle configs are automatically converted to pulse widths via `SERVO_ANGLE_TO_US()`.
+To change max throttle from 45° to 60°, just update `THROTTLE_FULL_ANGLE_DEG = 60`.
 
 ### Compile-Time Feature Toggles
 
