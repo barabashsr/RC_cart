@@ -214,6 +214,8 @@ void servo_set_center_us(uint16_t center_us)
 
 void servo_set_ch3_calibration(uint16_t min_us, uint16_t center_us, uint16_t max_us)
 {
+    if (center_us - min_us < 200) min_us = center_us - 200;
+    if (max_us - center_us < 200) max_us = center_us + 200;
     s_ch3_min_us = min_us;
     s_ch3_center_us = center_us;
     s_ch3_max_us = max_us;

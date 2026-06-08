@@ -101,6 +101,8 @@ void steering_set_center_us(uint16_t center_us)
 
 void steering_set_range(uint16_t min_us, uint16_t center_us, uint16_t max_us)
 {
+    if (center_us - min_us < 200) min_us = center_us - 200;
+    if (max_us - center_us < 200) max_us = center_us + 200;
     s_ch1_min_us = min_us;
     s_center_us = center_us;
     s_ch1_max_us = max_us;
@@ -159,20 +161,34 @@ void steering_update(uint16_t rc_pulse_us)
     int32_t target_pulses = (int32_t)roundf(target_angle * STEERING_PULSES_PER_DEGREE);
     int32_t error = target_pulses - actual_pulses;
 
-    /* Deadband */
-    if (abs(error) <= STEERING_POS_DEADBAND_PULSES) return;
+    /* Debug every ~20th call */
+    static int dbg_cnt = 0;
+    if (++dbg_cnt >= 20) {
+        dbg_cnt = 0;
+        ESP_LOGI(TAG, "RC=%u cal=%u-%u-%u | tgt=%d pul act=%ld err=%ld | limL=%d limR=%d run=%d st=%d",
+                 rc_pulse_us,
+                 s_ch1_min_us, s_center_us, s_ch1_max_us,
+                 (int)target_pulses, (long)actual_pulses, (long)error,
+                 left_triggered, right_triggered,
+                 rmt_pulse_gen_is_running(s_pulse_gen), s_state);
+    }
 
-    /* Soft speed scaling — gentler on small corrections */
-    float angle_error = fabsf(target_angle - actual_angle);
-    float max_vel = STEERING_MAX_SPEED_PPS;
-    if (angle_error < 5.0f) {
-        max_vel = STEERING_MAX_SPEED_PPS * angle_error / 5.0f;
-        if (max_vel < 500.0f) max_vel = 500.0f;
+    /* Deadband — stop sending pulses when within tolerance */
+    if (abs(error) <= STEERING_POS_DEADBAND_PULSES) {
+        if (rmt_pulse_gen_is_running(s_pulse_gen)) {
+            rmt_pulse_gen_stop_immediate(s_pulse_gen);
+        }
+        s_state = STEERING_IDLE;
+        return;
     }
 
     s_current_angle = target_angle;
     s_current_pulses = target_pulses;
-    rmt_pulse_gen_start_move(s_pulse_gen, error, max_vel, STEERING_ACCELERATION_PPS2);
+    s_state = STEERING_MOVING;
+
+    rmt_pulse_gen_start_move(s_pulse_gen, error,
+                              (float)STEERING_PULSE_RATE_PPS,
+                              (float)STEERING_RAMP_ACCEL_PPS2);
 }
 
 void steering_center(void)
@@ -184,7 +200,7 @@ void steering_center(void)
 void steering_stop(void)
 {
     if (!s_initialized) return;
-    rmt_pulse_gen_stop(s_pulse_gen, STEERING_DECELERATION_PPS2);
+    rmt_pulse_gen_stop_immediate(s_pulse_gen);
     s_state = STEERING_IDLE;
 }
 
@@ -226,6 +242,6 @@ static void limit_sw_isr(void *arg)
     int side = (int)(intptr_t)arg;
     s_state = (side == 0) ? STEERING_AT_LIMIT_LEFT : STEERING_AT_LIMIT_RIGHT;
     if (s_pulse_gen) {
-        rmt_pulse_gen_stop(s_pulse_gen, STEERING_DECELERATION_PPS2 * 2.0f);
+        rmt_pulse_gen_stop_immediate(s_pulse_gen);
     }
 }

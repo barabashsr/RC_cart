@@ -51,9 +51,15 @@ static bool IRAM_ATTR pcnt_watch_callback(pcnt_unit_handle_t unit,
      * Read the ACTUAL counter value — not the watch-point limit.
      * By ISR entry the counter may have overshot the limit by a few pulses.
      * Reading it directly captures every pulse that arrived, lossless.
+     *
+     * The PCNT counter is signed 16-bit (−32768..32767). When accum_count
+     * wraps past 32767 it jumps to −32768.  Unwrap to an unsigned step
+     * count (0..65535) so accumulator math stays correct.
      */
-    int count = 0;
-    pcnt_unit_get_count(tracker->pcnt_unit, &count);
+    int raw = 0;
+    pcnt_unit_get_count(tracker->pcnt_unit, &raw);
+    int64_t delta = raw;
+    if (delta < 0) delta += 65536LL;
 
     /*
      * Fold into accumulator. Sign depends on current direction.
@@ -61,13 +67,13 @@ static bool IRAM_ATTR pcnt_watch_callback(pcnt_unit_handle_t unit,
      */
     int64_t acc = atomic_load_explicit(&tracker->accumulator, memory_order_acquire);
     if (atomic_load_explicit(&tracker->direction, memory_order_acquire)) {
-        acc += count;
+        acc += delta;
     } else {
-        acc -= count;
+        acc -= delta;
     }
     atomic_store_explicit(&tracker->accumulator, acc, memory_order_release);
 
-    /* Clear after fold — pulses since read were already included in `count`. */
+    /* Clear after fold — pulses since read were already included in delta. */
     pcnt_unit_clear_count(tracker->pcnt_unit);
 
     return false;
@@ -224,15 +230,17 @@ int64_t pcnt_tracker_get_position(const pcnt_tracker_t* tracker)
 {
     if (!tracker || !tracker->initialized) return 0;
 
-    int count = 0;
-    pcnt_unit_get_count(tracker->pcnt_unit, &count);
+    int raw = 0;
+    pcnt_unit_get_count(tracker->pcnt_unit, &raw);
+    int64_t delta = raw;
+    if (delta < 0) delta += 65536LL;
 
     int64_t acc = atomic_load_explicit(&tracker->accumulator, memory_order_acquire);
 
     if (atomic_load_explicit(&tracker->direction, memory_order_acquire)) {
-        return acc + count;
+        return acc + delta;
     } else {
-        return acc - count;
+        return acc - delta;
     }
 }
 
@@ -252,14 +260,16 @@ void pcnt_tracker_set_direction(pcnt_tracker_t* tracker, bool forward)
      */
     portDISABLE_INTERRUPTS();
 
-    int count = 0;
-    pcnt_unit_get_count(tracker->pcnt_unit, &count);
+    int raw = 0;
+    pcnt_unit_get_count(tracker->pcnt_unit, &raw);
+    int64_t delta = raw;
+    if (delta < 0) delta += 65536LL;
 
     int64_t acc = atomic_load(&tracker->accumulator);
     if (old) {
-        acc += count;
+        acc += delta;
     } else {
-        acc -= count;
+        acc -= delta;
     }
     atomic_store(&tracker->accumulator, acc);
 

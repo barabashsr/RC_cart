@@ -397,9 +397,20 @@ esp_err_t rmt_pulse_gen_start_move(rmt_pulse_gen_t* gen, int32_t pulses,
     bool new_direction = (pulses >= 0);
     int32_t abs_pulses = (pulses >= 0) ? pulses : -pulses;
 
-    /* Stop any current motion */
+    /* Handle already-running case */
     if (atomic_load(&gen->running)) {
-        rmt_pulse_gen_stop_immediate(gen);
+        bool current_dir = atomic_load(&gen->direction);
+        if (new_direction != current_dir) {
+            rmt_pulse_gen_stop_immediate(gen);
+        } else {
+            atomic_store(&gen->params.target_position, abs_pulses);
+            atomic_store(&gen->params.target_velocity, max_velocity);
+            atomic_store(&gen->params.acceleration, acceleration);
+            atomic_store(&gen->params.position_mode, true);
+            atomic_store(&gen->params.params_changed, true);
+            xSemaphoreGive(gen->ramp_semaphore);
+            return ESP_OK;
+        }
     }
 
     /* Set direction GPIO */

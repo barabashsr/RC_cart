@@ -171,7 +171,7 @@ extern "C" {
 /* Servo ramp: limits rate of change to prevent jerks and power spikes.
  * Normal ramp is slow (1000 us/s) for smooth stick movements.
  * Failsafe ramp is faster (3000 us/s) for safety-critical brake engagement. */
-#define SERVO_RAMP_US_PER_SEC            1000
+#define SERVO_RAMP_US_PER_SEC            2000
 #define SERVO_RAMP_STEP                  ((SERVO_RAMP_US_PER_SEC) * TASK_PERIOD_CONTROL_MS / 1000)       /* 5 us/tick */
 #define SERVO_FAILSAFE_RAMP_US_PER_SEC   3000
 #define SERVO_FAILSAFE_STEP              ((SERVO_FAILSAFE_RAMP_US_PER_SEC) * TASK_PERIOD_CONTROL_MS / 1000)  /* 15 us/tick */
@@ -179,23 +179,30 @@ extern "C" {
 /*===========================================================================
  * 5. STEERING MOTOR CONFIGURATION (StepperOnline Step/Dir)
  *
+ * Position follower mode: firmware sends step pulses toward target position
+ * proportional to error. No trapezoidal velocity profiles — the DSY-RS
+ * servo drive handles all smoothing/accel/decel internally.
+ *
  * 0.1° resolution at the steering shaft. Mechanical reduction (54:1 belt +
  * planetary) is handled by the driver's P04.05 / P04.07 / P04.09 electronic
  * gear — our firmware just outputs pulses at 0.1° per step.
  *===========================================================================*/
 
-#define STEERING_PULSES_PER_DEGREE    10      /* 10 pulses/deg = 0.1° per step at shaft */
+/* Pulses per motor revolution — must match driver P04.05 (default=0 → 10000 from P04.07/P04.09).
+ * Reduction ratio: 54:1 on cart, 1:1 for bench test. */
+#define STEERING_PULSES_PER_MOTOR_REV  10000
+#define STEERING_REDUCTION_RATIO       57      /* 57:1 motor-to-shaft, 54 on cart */
+#define STEERING_PULSES_PER_DEGREE     ((STEERING_PULSES_PER_MOTOR_REV) * (STEERING_REDUCTION_RATIO) / 360)
 
 #define STEERING_MAX_ANGLE_DEG        35      /* Maximum steering angle from center (± this many degrees) */
 #define STEERING_MAX_PULSES           (int32_t)(STEERING_MAX_ANGLE_DEG * STEERING_PULSES_PER_DEGREE)
 
-/* Motion dynamics — scaled for 0.1° resolution (~700 pulses full range) */
-#define STEERING_MAX_SPEED_PPS        10000   /* 1000 deg/s = full range in 70 ms */
-#define STEERING_ACCELERATION_PPS2    50000   /* Reach top speed in 200 ms */
-#define STEERING_DECELERATION_PPS2    50000   /* Same as accel */
+/* Trapezoidal move: max step rate and acceleration */
+#define STEERING_PULSE_RATE_PPS       10000   /* Max step rate (1000 deg/s) */
+#define STEERING_RAMP_ACCEL_PPS2      50000   /* Reaches max speed in 200 ms */
 
 /* Closed-loop position deadband (pulses) */
-#define STEERING_POS_DEADBAND_PULSES  2       /* Stop corrective moves within 0.2° of target */
+#define STEERING_POS_DEADBAND_PULSES  2       /* Stop within tolerance */
 
 /* Endstop behavior */
 #define STEERING_LIMIT_ACTIVE_LEVEL   0       /* 0 = active LOW, pulled up internally */
