@@ -165,12 +165,9 @@ void steering_update(uint16_t rc_pulse_us)
     static int dbg_cnt = 0;
     if (++dbg_cnt >= 20) {
         dbg_cnt = 0;
-        ESP_LOGI(TAG, "RC=%u cal=%u-%u-%u | tgt=%d pul act=%ld err=%ld | limL=%d limR=%d run=%d st=%d",
-                 rc_pulse_us,
-                 s_ch1_min_us, s_center_us, s_ch1_max_us,
-                 (int)target_pulses, (long)actual_pulses, (long)error,
-                 left_triggered, right_triggered,
-                 rmt_pulse_gen_is_running(s_pulse_gen), s_state);
+        ESP_LOGI(TAG, "RC=%u | tgt=%d act=%ld err=%ld run=%d",
+                 rc_pulse_us, (int)target_pulses, (long)actual_pulses, (long)error,
+                 rmt_pulse_gen_is_running(s_pulse_gen));
     }
 
     /* Deadband — stop sending pulses when within tolerance */

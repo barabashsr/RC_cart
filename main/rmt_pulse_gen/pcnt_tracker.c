@@ -44,37 +44,15 @@ static bool IRAM_ATTR pcnt_watch_callback(pcnt_unit_handle_t unit,
                                            const pcnt_watch_event_data_t* event_data,
                                            void* user_data)
 {
+    (void)unit;
     (void)event_data;
     pcnt_tracker_t* tracker = (pcnt_tracker_t*)user_data;
 
-    /*
-     * Read the ACTUAL counter value — not the watch-point limit.
-     * By ISR entry the counter may have overshot the limit by a few pulses.
-     * Reading it directly captures every pulse that arrived, lossless.
-     *
-     * The PCNT counter is signed 16-bit (−32768..32767). When accum_count
-     * wraps past 32767 it jumps to −32768.  Unwrap to an unsigned step
-     * count (0..65535) so accumulator math stays correct.
-     */
-    int raw = 0;
-    pcnt_unit_get_count(tracker->pcnt_unit, &raw);
-    int64_t delta = raw;
-    if (delta < 0) delta += 65536LL;
-
-    /*
-     * Fold into accumulator. Sign depends on current direction.
-     * acquire/release ensure the direction read is visible.
-     */
     int64_t acc = atomic_load_explicit(&tracker->accumulator, memory_order_acquire);
-    if (atomic_load_explicit(&tracker->direction, memory_order_acquire)) {
-        acc += delta;
-    } else {
-        acc -= delta;
-    }
+    bool dir = atomic_load_explicit(&tracker->direction, memory_order_acquire);
+    if (dir) acc += PCNT_HIGH_LIMIT;
+    else     acc -= PCNT_HIGH_LIMIT;
     atomic_store_explicit(&tracker->accumulator, acc, memory_order_release);
-
-    /* Clear after fold — pulses since read were already included in delta. */
-    pcnt_unit_clear_count(tracker->pcnt_unit);
 
     return false;
 }
@@ -127,8 +105,8 @@ esp_err_t pcnt_tracker_init(pcnt_tracker_t* tracker)
 
     pcnt_unit_config_t unit_config = {
         .high_limit = PCNT_HIGH_LIMIT,
-        .low_limit  = PCNT_LOW_LIMIT,
-        .flags.accum_count = true,
+        .low_limit  = -1,
+        .flags.accum_count = false,
     };
 
     esp_err_t ret = pcnt_new_unit(&unit_config, &tracker->pcnt_unit);
@@ -167,11 +145,6 @@ esp_err_t pcnt_tracker_init(pcnt_tracker_t* tracker)
     ret = pcnt_unit_add_watch_point(tracker->pcnt_unit, PCNT_HIGH_LIMIT);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "add high watch point: %s", esp_err_to_name(ret));
-    }
-
-    ret = pcnt_unit_add_watch_point(tracker->pcnt_unit, PCNT_LOW_LIMIT);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "add low watch point: %s", esp_err_to_name(ret));
     }
 
     pcnt_event_callbacks_t cbs = { .on_reach = pcnt_watch_callback };
@@ -230,18 +203,16 @@ int64_t pcnt_tracker_get_position(const pcnt_tracker_t* tracker)
 {
     if (!tracker || !tracker->initialized) return 0;
 
+    portDISABLE_INTERRUPTS();
+
     int raw = 0;
     pcnt_unit_get_count(tracker->pcnt_unit, &raw);
-    int64_t delta = raw;
-    if (delta < 0) delta += 65536LL;
-
     int64_t acc = atomic_load_explicit(&tracker->accumulator, memory_order_acquire);
+    bool dir = atomic_load_explicit(&tracker->direction, memory_order_acquire);
 
-    if (atomic_load_explicit(&tracker->direction, memory_order_acquire)) {
-        return acc + delta;
-    } else {
-        return acc - delta;
-    }
+    portENABLE_INTERRUPTS();
+
+    return dir ? (acc + raw) : (acc - raw);
 }
 
 /* ---- Direction (interrupt-safe) ---- */
@@ -262,15 +233,10 @@ void pcnt_tracker_set_direction(pcnt_tracker_t* tracker, bool forward)
 
     int raw = 0;
     pcnt_unit_get_count(tracker->pcnt_unit, &raw);
-    int64_t delta = raw;
-    if (delta < 0) delta += 65536LL;
 
     int64_t acc = atomic_load(&tracker->accumulator);
-    if (old) {
-        acc += delta;
-    } else {
-        acc -= delta;
-    }
+    if (old) acc += raw;
+    else     acc -= raw;
     atomic_store(&tracker->accumulator, acc);
 
     pcnt_unit_clear_count(tracker->pcnt_unit);

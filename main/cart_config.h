@@ -197,12 +197,12 @@ extern "C" {
 #define STEERING_MAX_ANGLE_DEG        35      /* Maximum steering angle from center (± this many degrees) */
 #define STEERING_MAX_PULSES           (int32_t)(STEERING_MAX_ANGLE_DEG * STEERING_PULSES_PER_DEGREE)
 
-/* Trapezoidal move: max step rate and acceleration */
-#define STEERING_PULSE_RATE_PPS       10000   /* Max step rate (1000 deg/s) */
-#define STEERING_RAMP_ACCEL_PPS2      50000   /* Reaches max speed in 200 ms */
+/* Trapezoidal move: max step rate. Driver handles real acceleration via P04. */
+#define STEERING_PULSE_RATE_PPS       500000  /* 500 kpps = 3000 RPM motor */
+#define STEERING_RAMP_ACCEL_PPS2      500000000 /* Near-instant trapezoid → constant freq */
 
 /* Closed-loop position deadband (pulses) */
-#define STEERING_POS_DEADBAND_PULSES  2       /* Stop within tolerance */
+#define STEERING_POS_DEADBAND_PULSES  20      /* ~0.01° at output with 57:1 */
 
 /* Endstop behavior */
 #define STEERING_LIMIT_ACTIVE_LEVEL   0       /* 0 = active LOW, pulled up internally */
