@@ -207,6 +207,11 @@ extern "C" {
 /* Endstop behavior */
 #define STEERING_LIMIT_ACTIVE_LEVEL   0       /* 0 = active LOW, pulled up internally */
 
+/* PCNT limits (match yarobot dual-watchpoint approach) */
+#define PCNT_HIGH_LIMIT              32767
+#define PCNT_LOW_LIMIT              (-32767)
+#define RMT_MIN_START_FREQ_HZ        250     /* 250 Hz min — keeps ticks in uint16_t range */
+
 /*===========================================================================
  * 6. ENGINE CONFIGURATION (Starter + Ignition + RPM)
  *===========================================================================*/

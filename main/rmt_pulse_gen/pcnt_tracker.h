@@ -84,6 +84,17 @@ int64_t pcnt_tracker_get_position(const pcnt_tracker_t* tracker);
 void pcnt_tracker_set_direction(pcnt_tracker_t* tracker, bool forward);
 
 /**
+ * @brief Add pulses to position (no-op for hardware PCNT — edges counted by peripheral)
+ *
+ * Compatibility stub for queue-based position tracking used by RMT generator.
+ * Hardware PCNT counts actual step edges, so this function does nothing.
+ *
+ * @param tracker Tracker handle
+ * @param count Ignored
+ */
+void pcnt_tracker_add_pulses(pcnt_tracker_t* tracker, int64_t count);
+
+/**
  * @brief Check if tracker is initialized
  *
  * @param tracker Tracker handle

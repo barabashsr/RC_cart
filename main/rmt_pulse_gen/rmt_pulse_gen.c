@@ -39,10 +39,9 @@ static const char* TAG = "rmt_pulse_gen";
 #define RMT_MAX_STEPS_PER_CMD   255         /* Max steps per command */
 
 /* Frequency limits */
-#define MIN_PULSE_FREQ_HZ       1           /* Minimum pulse frequency (multi-symbol handles low freqs) */
-#define MIN_RAMP_FREQ_HZ        1           /* Min freq for ramp (multi-symbol handles low freqs) */
+#define MIN_PULSE_FREQ_HZ       1           /* Minimum pulse frequency (absolute floor) */
+#define MIN_START_FREQ_HZ       250         /* Min freq for ramp start (keeps ticks in uint16_t) */
 #define MAX_PULSE_FREQ_HZ       500000      /* Maximum pulse frequency */
-#define RMT_MAX_SYMBOL_TICKS    32000       /* Max ticks per RMT symbol (15-bit limit is 32767) */
 
 /* Timing */
 #define RAMP_TASK_STACK_SIZE    4096
@@ -74,7 +73,7 @@ typedef enum {
  * @brief Step command structure
  */
 typedef struct {
-    uint32_t ticks;     /* Period in RMT ticks (32-bit for low frequencies) */
+    uint16_t ticks;     /* Period in RMT ticks (uint16_t, min ~244 Hz at 16 MHz) */
     uint8_t steps;      /* Steps per command */
     uint8_t flags;      /* Command flags */
 } step_command_t;
@@ -83,9 +82,9 @@ typedef struct {
  * @brief Queue state tracking
  */
 typedef struct {
-    int32_t position;           /* Position at end of queue */
-    bool direction;             /* Direction at end of queue */
-    uint32_t ticks_queued;      /* Total ticks in queue */
+    volatile int32_t position;      /* Position at end of queue */
+    volatile bool direction;        /* Direction at end of queue */
+    volatile uint32_t ticks_queued; /* Total ticks in queue */
 } queue_state_t;
 
 /**
@@ -157,7 +156,6 @@ static step_command_t generate_next_command(rmt_pulse_gen_t* gen);
 static int32_t calculate_decel_distance(float velocity, float decel);
 static uint8_t calculate_steps_for_latency(uint32_t ticks);
 static bool is_queue_full(const rmt_pulse_gen_t* gen);
-static bool is_queue_empty(const rmt_pulse_gen_t* gen);
 static uint8_t queue_space(const rmt_pulse_gen_t* gen);
 static bool push_command(rmt_pulse_gen_t* gen, const step_command_t* cmd);
 static void clear_queue(rmt_pulse_gen_t* gen);
@@ -397,20 +395,10 @@ esp_err_t rmt_pulse_gen_start_move(rmt_pulse_gen_t* gen, int32_t pulses,
     bool new_direction = (pulses >= 0);
     int32_t abs_pulses = (pulses >= 0) ? pulses : -pulses;
 
-    /* Handle already-running case */
+    /* If already running, stop and restart fresh (yarobot pattern).
+     * The RMT gap is ~50-100 µs — imperceptible with mechanical reduction. */
     if (atomic_load(&gen->running)) {
-        bool current_dir = atomic_load(&gen->direction);
-        if (new_direction != current_dir) {
-            rmt_pulse_gen_stop_immediate(gen);
-        } else {
-            atomic_store(&gen->params.target_position, abs_pulses);
-            atomic_store(&gen->params.target_velocity, max_velocity);
-            atomic_store(&gen->params.acceleration, acceleration);
-            atomic_store(&gen->params.position_mode, true);
-            atomic_store(&gen->params.params_changed, true);
-            xSemaphoreGive(gen->ramp_semaphore);
-            return ESP_OK;
-        }
+        rmt_pulse_gen_stop_immediate(gen);
     }
 
     /* Set direction GPIO */
@@ -585,6 +573,14 @@ void rmt_pulse_gen_stop_immediate(rmt_pulse_gen_t* gen)
     gen->ramp_state = RAMP_IDLE;
     gen->current_velocity = 0.0f;
     clear_queue(gen);
+
+    /* Sync position tracker from ISR pulse count after aborted queue.
+     * pulse_count_ is never reset — it tracks the cumulative absolute position. */
+    if (gen->position_tracker) {
+        int64_t actual = atomic_load(&gen->pulse_count);
+        pcnt_tracker_reset(gen->position_tracker, actual);
+        ESP_LOGD(TAG, "stopImmediate: synced tracker to %lld", (long long)actual);
+    }
 }
 
 bool rmt_pulse_gen_is_running(const rmt_pulse_gen_t* gen)
@@ -675,7 +671,7 @@ static void fill_queue(rmt_pulse_gen_t* gen)
 {
     /* Check for pending direction change after deceleration to stop */
     if (atomic_load(&gen->params.direction_change_pending)) {
-        if (gen->current_velocity < MIN_RAMP_FREQ_HZ) {
+        if (gen->current_velocity < MIN_START_FREQ_HZ) {
             /* Stopped - now change direction and accelerate to pending target */
             bool new_dir = atomic_load(&gen->params.pending_direction);
             float new_vel = atomic_load(&gen->params.pending_velocity);
@@ -716,7 +712,7 @@ static void fill_queue(rmt_pulse_gen_t* gen)
         /* Smooth velocity transitions for both modes (important for heavy parts with high inertia) */
         if (!position_mode) {
             /* Velocity (jog) mode - smooth ramping to new target */
-            if (gen->current_velocity < MIN_RAMP_FREQ_HZ) {
+            if (gen->current_velocity < MIN_START_FREQ_HZ) {
                 /* Starting from near-zero - accelerate to target */
                 gen->ramp_state = RAMP_ACCELERATING;
                 gen->ramp_steps_up = 0;
@@ -829,9 +825,9 @@ static step_command_t generate_next_command(rmt_pulse_gen_t* gen)
                 }
             }
 
-            /* Clamp to minimum ramp frequency (keeps RMT duration < 32767) */
-            if (velocity < MIN_RAMP_FREQ_HZ) {
-                velocity = MIN_RAMP_FREQ_HZ;
+            /* Clamp to minimum start frequency (keeps RMT ticks in uint16_t range) */
+            if (velocity < MIN_START_FREQ_HZ) {
+                velocity = MIN_START_FREQ_HZ;
             }
 
             gen->current_velocity = velocity;
@@ -840,7 +836,7 @@ static step_command_t generate_next_command(rmt_pulse_gen_t* gen)
             uint8_t steps = calculate_steps_for_latency(gen->current_ticks);
             gen->ramp_steps_up += steps;
 
-            cmd.ticks = gen->current_ticks;
+            cmd.ticks = (gen->current_ticks > 65535) ? 65535 : (uint16_t)gen->current_ticks;
             cmd.steps = steps;
             break;
         }
@@ -875,8 +871,8 @@ static step_command_t generate_next_command(rmt_pulse_gen_t* gen)
                 }
 
                 /* Clamp to minimum */
-                if (gen->current_velocity < MIN_RAMP_FREQ_HZ) {
-                    gen->current_velocity = MIN_RAMP_FREQ_HZ;
+                if (gen->current_velocity < MIN_START_FREQ_HZ) {
+                    gen->current_velocity = MIN_START_FREQ_HZ;
                 }
 
                 gen->current_ticks = RMT_RESOLUTION_HZ / (uint32_t)gen->current_velocity;
@@ -884,7 +880,7 @@ static step_command_t generate_next_command(rmt_pulse_gen_t* gen)
                 steps = calculate_steps_for_latency(gen->current_ticks);
             }
 
-            cmd.ticks = gen->current_ticks;
+            cmd.ticks = (gen->current_ticks > 65535) ? 65535 : (uint16_t)gen->current_ticks;
             cmd.steps = steps;
             break;
         }
@@ -907,7 +903,7 @@ static step_command_t generate_next_command(rmt_pulse_gen_t* gen)
                 /* v = sqrt(2 * a * remaining) */
                 float velocity = sqrtf(2.0f * accel * (float)remaining_to_target);
 
-                if (velocity < MIN_RAMP_FREQ_HZ) {
+                if (velocity < MIN_START_FREQ_HZ) {
                     cmd.flags |= CMD_FLAG_LAST;
                     break;
                 }
@@ -922,7 +918,7 @@ static step_command_t generate_next_command(rmt_pulse_gen_t* gen)
 
                 gen->ramp_steps_down += steps;
 
-                cmd.ticks = gen->current_ticks;
+                cmd.ticks = (gen->current_ticks > 65535) ? 65535 : (uint16_t)gen->current_ticks;
                 cmd.steps = steps;
 
                 if (steps == remaining_to_target) {
@@ -955,7 +951,7 @@ static step_command_t generate_next_command(rmt_pulse_gen_t* gen)
                     }
 
                     /* Clamp to minimum (for stopping) */
-                    if (target_vel < MIN_RAMP_FREQ_HZ && gen->current_velocity < MIN_RAMP_FREQ_HZ) {
+                    if (target_vel < MIN_START_FREQ_HZ && gen->current_velocity < MIN_START_FREQ_HZ) {
                         cmd.flags |= CMD_FLAG_LAST;
                         break;
                     }
@@ -1006,13 +1002,6 @@ static bool is_queue_full(const rmt_pulse_gen_t* gen)
     uint8_t rp = atomic_load(&gen->read_idx);
     uint8_t wp = atomic_load(&gen->write_idx);
     return ((wp + 1) & RMT_QUEUE_LEN_MASK) == rp;
-}
-
-static bool is_queue_empty(const rmt_pulse_gen_t* gen)
-{
-    uint8_t rp = atomic_load(&gen->read_idx);
-    uint8_t wp = atomic_load(&gen->write_idx);
-    return rp == wp;
 }
 
 static uint8_t queue_space(const rmt_pulse_gen_t* gen)
@@ -1141,27 +1130,21 @@ static size_t IRAM_ATTR encode_callback(const void* data, size_t data_size,
 
 /* ISR: Fill RMT symbols from command
  *
- * For low frequencies (< ~244 Hz), we use multiple symbols per step:
- * - First N-1 symbols: idle (low-low) to extend period
- * - Last symbol: actual pulse (low-high)
- *
- * Example: 100 Hz = 160,000 ticks period
- *   Need 5 symbols of 32,000 ticks each
- *   First 4 symbols: duration0=16000 level0=0, duration1=16000 level1=0
- *   Last symbol:     duration0=16000 level0=0, duration1=16000 level1=1
+ * Single-symbol-per-step (50% duty cycle):
+ * One RMT symbol = one step pulse. Unused symbols get idle fill.
+ * Minimum frequency is ~244 Hz (16 MHz / 65535 ticks) — clamped to
+ * MIN_START_FREQ_HZ (250 Hz) in generateNextCommand.
  */
 static size_t IRAM_ATTR fill_symbols(rmt_pulse_gen_t* gen, rmt_symbol_word_t* symbols,
                                       step_command_t* cmd)
 {
     uint8_t steps = cmd->steps;
-    uint32_t ticks = cmd->ticks;  /* Use uint32_t for extended range */
+    uint16_t ticks = cmd->ticks;
 
     /* Pause command */
     if (steps == 0) {
         gen->last_chunk_had_steps = false;
-        uint16_t ticks_per_symbol = (ticks > RMT_MAX_SYMBOL_TICKS) ?
-                                     RMT_MAX_SYMBOL_TICKS : (uint16_t)ticks;
-        ticks_per_symbol /= RMT_PART_SIZE;
+        uint16_t ticks_per_symbol = ticks / RMT_PART_SIZE;
         if (ticks_per_symbol < 2) ticks_per_symbol = 2;
 
         for (uint8_t i = 0; i < RMT_PART_SIZE; i++) {
@@ -1171,7 +1154,6 @@ static size_t IRAM_ATTR fill_symbols(rmt_pulse_gen_t* gen, rmt_symbol_word_t* sy
             symbols[i].level1 = 0;
         }
 
-        /* Advance to next command */
         atomic_store_explicit(&gen->read_idx,
             (atomic_load_explicit(&gen->read_idx, memory_order_relaxed) + 1) & RMT_QUEUE_LEN_MASK,
             memory_order_release);
@@ -1180,59 +1162,55 @@ static size_t IRAM_ATTR fill_symbols(rmt_pulse_gen_t* gen, rmt_symbol_word_t* sy
 
     gen->last_chunk_had_steps = true;
 
-    /* Calculate symbols needed per step pulse */
-    uint8_t symbols_per_step = (ticks + RMT_MAX_SYMBOL_TICKS - 1) / RMT_MAX_SYMBOL_TICKS;
-    if (symbols_per_step < 1) symbols_per_step = 1;
-
-    /* How many steps can we fit in this chunk? */
-    uint8_t steps_to_do = RMT_PART_SIZE / symbols_per_step;
-    if (steps_to_do < 1) steps_to_do = 1;
-    if (steps_to_do > steps) steps_to_do = steps;
-
-    /* Calculate per-symbol timing */
-    uint32_t ticks_per_symbol = ticks / symbols_per_step;
-    if (ticks_per_symbol > RMT_MAX_SYMBOL_TICKS) ticks_per_symbol = RMT_MAX_SYMBOL_TICKS;
-    uint16_t half_ticks = (ticks_per_symbol >> 1);
-    if (half_ticks < 1) half_ticks = 1;
-    if (half_ticks < RMT_HALF_TICK_MIN) half_ticks = RMT_HALF_TICK_MIN;  /* 2.5 µs min */
-
-    /* Fill symbols */
-    uint8_t sym_idx = 0;
-
-    for (uint8_t step = 0; step < steps_to_do && sym_idx < RMT_PART_SIZE; step++) {
-        /* Fill idle symbols for this step (all but last) */
-        for (uint8_t s = 0; s < symbols_per_step - 1 && sym_idx < RMT_PART_SIZE; s++) {
-            symbols[sym_idx].duration0 = half_ticks;
-            symbols[sym_idx].level0 = 0;
-            symbols[sym_idx].duration1 = half_ticks;
-            symbols[sym_idx].level1 = 0;
-            sym_idx++;
-        }
-
-        /* Last symbol of this step: actual pulse */
-        if (sym_idx < RMT_PART_SIZE) {
-            symbols[sym_idx].duration0 = half_ticks;
-            symbols[sym_idx].level0 = 0;
-            symbols[sym_idx].duration1 = half_ticks;
-            symbols[sym_idx].level1 = 1;
-            sym_idx++;
-        }
+    /* Determine how many steps to generate this callback */
+    uint8_t steps_to_do = steps;
+    if (steps_to_do > RMT_PART_SIZE) {
+        steps_to_do = RMT_PART_SIZE;
     }
 
-    /* Fill remaining symbols with short idle */
-    while (sym_idx < RMT_PART_SIZE) {
-        symbols[sym_idx].duration0 = 2;
-        symbols[sym_idx].level0 = 0;
-        symbols[sym_idx].duration1 = 2;
-        symbols[sym_idx].level1 = 0;
-        sym_idx++;
+    /* Calculate 50% duty cycle timing (integer math only) */
+    uint16_t half_ticks_high = ticks >> 1;
+    uint16_t half_ticks_low = ticks - half_ticks_high;
+
+    /* Ensure minimum pulse width for stepper driver */
+    if (half_ticks_high < 1) half_ticks_high = 1;
+    if (half_ticks_low < 1) half_ticks_low = 1;
+    if (half_ticks_high < RMT_HALF_TICK_MIN) half_ticks_high = RMT_HALF_TICK_MIN;
+    if (half_ticks_low < RMT_HALF_TICK_MIN) half_ticks_low = RMT_HALF_TICK_MIN;
+
+    if (steps_to_do < RMT_PART_SIZE) {
+        /* Fill unused symbols with idle first */
+        uint8_t idle_count = RMT_PART_SIZE - steps_to_do;
+
+        for (uint8_t i = 0; i < idle_count; i++) {
+            symbols[i].duration0 = 2;
+            symbols[i].level0 = 0;
+            symbols[i].duration1 = 2;
+            symbols[i].level1 = 0;
+        }
+
+        /* Generate step pulses */
+        for (uint8_t i = 0; i < steps_to_do; i++) {
+            symbols[idle_count + i].duration0 = half_ticks_low;
+            symbols[idle_count + i].level0 = 0;
+            symbols[idle_count + i].duration1 = half_ticks_high;
+            symbols[idle_count + i].level1 = 1;
+        }
+    } else {
+        /* All PART_SIZE symbols are step pulses */
+        for (uint8_t i = 0; i < RMT_PART_SIZE; i++) {
+            symbols[i].duration0 = half_ticks_low;
+            symbols[i].level0 = 0;
+            symbols[i].duration1 = half_ticks_high;
+            symbols[i].level1 = 1;
+        }
     }
 
     /* Update command or advance */
     uint8_t remaining = steps - steps_to_do;
 
     /* Update ticks_queued */
-    uint32_t consumed_ticks = ticks * steps_to_do;
+    uint32_t consumed_ticks = (uint32_t)ticks * steps_to_do;
     if (gen->queue_end.ticks_queued >= consumed_ticks) {
         gen->queue_end.ticks_queued -= consumed_ticks;
     } else {

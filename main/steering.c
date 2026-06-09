@@ -180,7 +180,6 @@ void steering_update(uint16_t rc_pulse_us)
     }
 
     s_current_angle = target_angle;
-    s_current_pulses = target_pulses;
     s_state = STEERING_MOVING;
 
     rmt_pulse_gen_start_move(s_pulse_gen, error,
